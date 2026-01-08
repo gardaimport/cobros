@@ -24,16 +24,33 @@ excel_file = st.file_uploader("Sube el Excel de albaranes", type=["xlsx", "xls"]
 # FUNCIONES
 # ==========================
 def leer_pdf_tpv(pdf):
+    """
+    Lector específico para tickets TPV tipo Redsys / banca española.
+    Extrae IMPORTE y REFERENCIA desde texto plano.
+    """
+    import re
     registros = []
+
     with pdfplumber.open(pdf) as pdf_doc:
-        for page in pdf_doc.pages:
-            tables = page.extract_tables()
-            for table in tables:
-                headers = table[0]
-                for row in table[1:]:
-                    registros.append(dict(zip(headers, row)))
-    df = pd.DataFrame(registros)
-    return df
+        texto = "\n".join(page.extract_text() or "" for page in pdf_doc.pages)
+
+    # Patrón:
+    # - Importe con punto decimal
+    # - Fecha
+    # - Más texto
+    # - Referencia numérica (cliente)
+    patron = re.compile(
+        r"(?P<importe>\d+\.\d{2})\s+2026-\d{2}-\d{2}.*?\n.*?\n(?P<ref>\d{3,6})\s",
+        re.DOTALL
+    )
+
+    for m in patron.finditer(texto):
+        registros.append({
+            "REFERENCIA": m.group("ref"),
+            "IMPORTE_TPV": float(m.group("importe"))
+        })
+
+    return pd.DataFrame(registros)
 
 
 def limpiar_importe(valor, origen="auto"):
