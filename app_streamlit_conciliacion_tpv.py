@@ -27,20 +27,22 @@ excel_file = st.file_uploader("Sube el Excel de albaranes", type=["xlsx", "xls"]
 # FUNCIONES
 # ==========================
 def pdf_a_tabla_excel(pdf):
-    """Convierte PDF TPV a DataFrame y Excel en memoria"""
+    """Convierte PDF TPV a DataFrame y Excel en memoria (corrige decimales)"""
     registros = []
     with pdfplumber.open(pdf) as pdf_doc:
         texto = "\n".join(page.extract_text() or "" for page in pdf_doc.pages)
 
     patron = re.compile(
-        r"(?P<importe>\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2}))\D+(?P<ref>\d{3,6})\b"
+        r"(?P<importe>\d{1,3}(?:[.,]\d{2}))\D+(?P<ref>\d{5})\b"
     )
 
     for m in patron.finditer(texto):
-        imp = m.group("importe").replace(".", "").replace(",", ".")
+        # IMPORTANTE: PDF usa punto decimal, quitamos solo comas de miles si existen
+        imp_str = m.group("importe").replace(",", "")
+        imp = float(imp_str)
         registros.append({
             "REFERENCIA": m.group("ref").strip(),
-            "IMPORTE": float(imp)
+            "IMPORTE": imp
         })
 
     df = pd.DataFrame(registros)
