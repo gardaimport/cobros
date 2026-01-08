@@ -16,6 +16,7 @@ Esta aplicación permite:
 - Marcar qué clientes están **cobrados / no cobrados**
 - Detectar **diferencias de importe** o **referencias mal escritas**
 - Descargar resultados con **coma decimal** sin separador de miles
+- Ver importes en pantalla con **coma decimal**, igual que en Excel
 """)
 
 # ==========================
@@ -62,13 +63,12 @@ def limpiar_importe(valor, origen="auto"):
     try:
         v = str(valor).replace("€", "").strip()
         if origen == "pdf":
-            v = v.replace(",", "")  # quitamos comas de miles si existieran
+            v = v.replace(",", "")
             return float(v)
         elif origen == "excel":
-            v = v.replace(",", ".")  # convertimos coma decimal a punto
+            v = v.replace(",", ".")
             return float(v)
         else:
-            # auto intenta ambos
             if v.count(",") == 1 and v.count(".") == 0:
                 return float(v.replace(",", "."))
             else:
@@ -90,7 +90,12 @@ def similitud(a, b):
 if pdf_file:
     st.subheader("Vista previa de PDF convertido a tabla")
     buffer_pdf, df_pdf_tabla = pdf_a_tabla_excel_linea(pdf_file)
-    st.dataframe(df_pdf_tabla)
+
+    # Formatear importes con coma decimal para vista
+    df_vista = df_pdf_tabla.copy()
+    df_vista["IMPORTE"] = df_vista["IMPORTE"].apply(lambda x: f"{x:.2f}".replace(".", ","))
+
+    st.dataframe(df_vista)
 
     st.download_button(
         label="Descargar tabla del PDF en Excel",
@@ -148,9 +153,9 @@ if pdf_file and excel_file:
             if not candidatos.empty:
                 candidatos["SIMILITUD"] = candidatos["REFERENCIA"].apply(lambda x: similitud(cliente, x))
                 mejor = candidatos.sort_values("SIMILITUD", ascending=False).iloc[0]
-                if mejor["SIMILUD"] >= 0.6:
+                if mejor["SIMILITUD"] >= 0.6:
                     df_resultado.at[idx, "OBSERVACIONES"] = (
-                        f"Alta prob. ref. mal escrita (TPV: {mejor['REFERENCIA']}, similitud {mejor['SIMILUD']:.0%})"
+                        f"Alta prob. ref. mal escrita (TPV: {mejor['REFERENCIA']}, similitud {mejor['SIMILITUD']:.0%})"
                     )
                 else:
                     df_resultado.at[idx, "OBSERVACIONES"] = (
@@ -158,19 +163,17 @@ if pdf_file and excel_file:
                     )
 
     # ==========================
-    # RESULTADOS CON ESTILO
+    # RESULTADOS
     # ==========================
     st.subheader("Resultado de la conciliación")
 
-    def colorear_filas(row):
-        if row["ESTADO COBRO"] == "NO COBRADO":
-            return ['background-color: #fdd']*len(row)  # rojo claro
-        elif abs(row["DIFERENCIA"]) > 0.01:
-            return ['background-color: #ffd']*len(row)  # amarillo claro
-        else:
-            return ['']*len(row)
+    # Crear vista con importes con coma decimal
+    df_vista_resultado = df_resultado.copy()
+    for col in ["IMPORTE_ALBARAN", "IMPORTE_TPV", "DIFERENCIA"]:
+        if col in df_vista_resultado.columns:
+            df_vista_resultado[col] = df_vista_resultado[col].apply(lambda x: f"{x:.2f}".replace(".", ","))
 
-    st.dataframe(df_resultado.style.apply(colorear_filas, axis=1), use_container_width=True)
+    st.dataframe(df_vista_resultado, use_container_width=True)
 
     # ==========================
     # DESCARGA RESULTADOS CON COMA DECIMAL Y SIN SEPARADOR DE MILES
@@ -178,7 +181,6 @@ if pdf_file and excel_file:
     df_export = df_resultado.copy()
     for col in ["IMPORTE_ALBARAN", "IMPORTE_TPV", "DIFERENCIA"]:
         if col in df_export.columns:
-            # formato: dos decimales, coma decimal, sin separador de miles
             df_export[col] = df_export[col].apply(lambda x: f"{x:.2f}".replace(".", ","))
 
     buffer_resultado = BytesIO()
