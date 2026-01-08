@@ -15,6 +15,7 @@ Esta aplicación permite:
 - Subir un **Excel de albaranes repartidos**
 - Marcar qué clientes están **cobrados / no cobrados**
 - Detectar **diferencias de importe** o **referencias mal escritas**
+- Descargar resultados con **coma decimal**, igual que tu sistema
 """)
 
 # ==========================
@@ -26,28 +27,26 @@ excel_file = st.file_uploader("Sube el Excel de albaranes", type=["xlsx", "xls"]
 # ==========================
 # FUNCIONES
 # ==========================
-def pdf_a_tabla_excel(pdf):
-    """Convierte PDF TPV a DataFrame y Excel en memoria (corrige decimales)"""
+def pdf_a_tabla_excel_linea(pdf):
+    """Convierte PDF TPV a DataFrame línea por línea (robusto)"""
     registros = []
+    patron = re.compile(r'(?P<importe>\d+\.\d{2}).*?(?P<ref>\d{5})')
+
     with pdfplumber.open(pdf) as pdf_doc:
-        texto = "\n".join(page.extract_text() or "" for page in pdf_doc.pages)
-
-    patron = re.compile(
-        r"(?P<importe>\d{1,3}(?:[.,]\d{2}))\D+(?P<ref>\d{5})\b"
-    )
-
-    for m in patron.finditer(texto):
-        # IMPORTANTE: PDF usa punto decimal, quitamos solo comas de miles si existen
-        imp_str = m.group("importe").replace(",", "")
-        imp = float(imp_str)
-        registros.append({
-            "REFERENCIA": m.group("ref").strip(),
-            "IMPORTE": imp
-        })
+        for page in pdf_doc.pages:
+            text = page.extract_text()
+            if text:
+                for linea in text.split("\n"):
+                    m = patron.search(linea)
+                    if m:
+                        registros.append({
+                            "REFERENCIA": m.group("ref").strip(),
+                            "IMPORTE": float(m.group("importe"))
+                        })
 
     df = pd.DataFrame(registros)
 
-    # Excel en memoria
+    # Excel en memoria (para revisión)
     buffer = BytesIO()
     df.to_excel(buffer, index=False, engine="openpyxl")
     buffer.seek(0)
@@ -59,7 +58,7 @@ def limpiar_importe(valor, origen="auto"):
     try:
         v = str(valor).replace("€", "").strip()
         if origen == "pdf":
-            v = v.replace(",", "")
+            v = v.replace(",", "")  # quitamos solo coma de miles si existiera
         elif origen == "excel":
             v = v.replace(".", "").replace(",", ".")
         else:
@@ -84,7 +83,7 @@ def similitud(a, b):
 # ==========================
 if pdf_file:
     st.subheader("Vista previa de PDF convertido a tabla")
-    buffer_pdf, df_pdf_tabla = pdf_a_tabla_excel(pdf_file)
+    buffer_pdf, df_pdf_tabla = pdf_a_tabla_excel_linea(pdf_file)
     st.dataframe(df_pdf_tabla)
 
     st.download_button(
@@ -100,12 +99,12 @@ if pdf_file:
 if pdf_file and excel_file:
     st.success("Archivos cargados correctamente. Realizando conciliación...")
 
-    # Leer PDF
+    # Leer PDF (procesado línea por línea)
     df_tpv = df_pdf_tabla.rename(columns=str.upper)
     df_tpv["REFERENCIA"] = df_tpv["REFERENCIA"].astype(str).str.strip()
     df_tpv["IMPORTE_TPV"] = df_tpv["IMPORTE"].apply(lambda x: limpiar_importe(x, origen="pdf"))
 
-    # Leer Excel
+    # Leer Excel de albaranes
     df_alb = pd.read_excel(excel_file)
     df_alb["Venta a-Nº cliente"] = df_alb["Venta a-Nº cliente"].astype(str).str.strip()
     df_alb["IMPORTE_ALBARAN"] = df_alb["Importe envío IVA incluido"].apply(lambda x: limpiar_importe(x, origen="excel"))
@@ -143,7 +142,7 @@ if pdf_file and excel_file:
             if not candidatos.empty:
                 candidatos["SIMILITUD"] = candidatos["REFERENCIA"].apply(lambda x: similitud(cliente, x))
                 mejor = candidatos.sort_values("SIMILITUD", ascending=False).iloc[0]
-                if mejor["SIMILITUD"] >= 0.6:
+                if mejor["SIMILUD"] >= 0.6:
                     df_resultado.at[idx, "OBSERVACIONES"] = (
                         f"Alta prob. ref. mal escrita (TPV: {mejor['REFERENCIA']}, similitud {mejor['SIMILUD']:.0%})"
                     )
@@ -168,17 +167,22 @@ if pdf_file and excel_file:
     st.dataframe(df_resultado.style.apply(colorear_filas, axis=1), use_container_width=True)
 
     # ==========================
-    # DESCARGA RESULTADOS
+    # DESCARGA RESULTADOS CON COMA DECIMAL
     # ==========================
+    # Creamos copia para exportar con coma decimal
+    df_export = df_resultado.copy()
+    for col in ["IMPORTE_ALBARAN", "IMPORTE_TPV", "DIFERENCIA"]:
+        if col in df_export.columns:
+            df_export[col] = df_export[col].apply(lambda x: f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+
     buffer_resultado = BytesIO()
-    output = df_resultado.copy()
-    output.to_excel(buffer_resultado, index=False, engine="openpyxl")
+    df_export.to_excel(buffer_resultado, index=False, engine="openpyxl")
     buffer_resultado.seek(0)
 
     st.download_button(
-        label="Descargar resultado en Excel",
+        label="Descargar resultado en Excel (coma decimal)",
         data=buffer_resultado,
-        file_name="conciliacion_tpv.xlsx",
+        file_name="conciliacion_tpv_coma.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
