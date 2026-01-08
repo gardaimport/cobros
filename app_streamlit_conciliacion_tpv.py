@@ -162,20 +162,31 @@ if pdf_file and excel_file:
                         f"Cobro TPV con mismo importe (ref distinta: {mejor['REFERENCIA']})"
                     )
 
-    # ==========================
-    # RESULTADOS
-    # ==========================
-    st.subheader("Resultado de la conciliación")
+# ==========================
+# RESULTADOS
+# ==========================
+st.subheader("Resultado de la conciliación")
 
-    st.dataframe(df_resultado, use_container_width=True)
+st.dataframe(df_resultado, use_container_width=True)
 
-    # Descarga
-    output = df_resultado.copy()
-    st.download_button(
-        label="Descargar resultado en Excel",
-        data=output.to_excel(index=False, engine="openpyxl"),
-        file_name="conciliacion_tpv.xlsx"
-    )
+# ==========================
+# DESCARGA CORRECTA
+# ==========================
+from io import BytesIO
+
+# Crear un buffer en memoria
+buffer = BytesIO()
+output = df_resultado.copy()
+output.to_excel(buffer, index=False, engine="openpyxl")
+buffer.seek(0)  # Volver al inicio del buffer
+
+# Botón de descarga
+st.download_button(
+    label="Descargar resultado en Excel",
+    data=buffer,
+    file_name="conciliacion_tpv.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
 
 else:
     st.info("Por favor, sube ambos archivos para iniciar la conciliación")
