@@ -15,7 +15,7 @@ Esta aplicación permite:
 - Subir un **Excel de albaranes repartidos**
 - Marcar qué clientes están **cobrados / no cobrados**
 - Detectar **diferencias de importe** o **referencias mal escritas**
-- Descargar resultados con **coma decimal**, igual que tu sistema
+- Descargar resultados con **coma decimal** sin separador de miles
 """)
 
 # ==========================
@@ -54,19 +54,25 @@ def pdf_a_tabla_excel_linea(pdf):
 
 
 def limpiar_importe(valor, origen="auto"):
-    """Convierte importe a float de manera segura"""
+    """
+    Convierte importe a float de manera segura.
+    PDF: punto decimal
+    Excel: coma decimal, sin separador de miles
+    """
     try:
         v = str(valor).replace("€", "").strip()
         if origen == "pdf":
-            v = v.replace(",", "")  # quitamos solo coma de miles si existiera
+            v = v.replace(",", "")  # quitamos comas de miles si existieran
+            return float(v)
         elif origen == "excel":
-            v = v.replace(".", "").replace(",", ".")
+            v = v.replace(",", ".")  # convertimos coma decimal a punto
+            return float(v)
         else:
+            # auto intenta ambos
             if v.count(",") == 1 and v.count(".") == 0:
-                v = v.replace(",", ".")
-            elif v.count(".") > 1:
-                v = v.replace(".", "")
-        return float(v)
+                return float(v.replace(",", "."))
+            else:
+                return float(v)
     except:
         return None
 
@@ -167,22 +173,22 @@ if pdf_file and excel_file:
     st.dataframe(df_resultado.style.apply(colorear_filas, axis=1), use_container_width=True)
 
     # ==========================
-    # DESCARGA RESULTADOS CON COMA DECIMAL
+    # DESCARGA RESULTADOS CON COMA DECIMAL Y SIN SEPARADOR DE MILES
     # ==========================
-    # Creamos copia para exportar con coma decimal
     df_export = df_resultado.copy()
     for col in ["IMPORTE_ALBARAN", "IMPORTE_TPV", "DIFERENCIA"]:
         if col in df_export.columns:
-            df_export[col] = df_export[col].apply(lambda x: f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+            # formato: dos decimales, coma decimal, sin separador de miles
+            df_export[col] = df_export[col].apply(lambda x: f"{x:.2f}".replace(".", ","))
 
     buffer_resultado = BytesIO()
     df_export.to_excel(buffer_resultado, index=False, engine="openpyxl")
     buffer_resultado.seek(0)
 
     st.download_button(
-        label="Descargar resultado en Excel (coma decimal)",
+        label="Descargar resultado en Excel (coma decimal, sin miles)",
         data=buffer_resultado,
-        file_name="conciliacion_tpv_coma.xlsx",
+        file_name="conciliacion_tpv.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
