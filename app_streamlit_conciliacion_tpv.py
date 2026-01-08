@@ -11,6 +11,7 @@ st.title("Conciliación de cobros TPV vs Albaranes")
 st.markdown("""
 Esta aplicación permite:
 - Subir un **PDF de cobros TPV** (con columnas *REFERENCIA* e *IMPORTE*)
+- Convertirlo en **Excel para revisión**
 - Subir un **Excel de albaranes repartidos**
 - Marcar qué clientes están **cobrados / no cobrados**
 - Detectar **diferencias de importe** o **referencias mal escritas**
@@ -25,13 +26,12 @@ excel_file = st.file_uploader("Sube el Excel de albaranes", type=["xlsx", "xls"]
 # ==========================
 # FUNCIONES
 # ==========================
-def leer_pdf_tpv(pdf):
-    """Extrae REFERENCIA e IMPORTE de PDF TPV"""
+def pdf_a_tabla_excel(pdf):
+    """Convierte PDF TPV a DataFrame y Excel en memoria"""
     registros = []
     with pdfplumber.open(pdf) as pdf_doc:
         texto = "\n".join(page.extract_text() or "" for page in pdf_doc.pages)
 
-    # Patrón flexible: importe seguido de referencia
     patron = re.compile(
         r"(?P<importe>\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2}))\D+(?P<ref>\d{3,6})\b"
     )
@@ -40,10 +40,16 @@ def leer_pdf_tpv(pdf):
         imp = m.group("importe").replace(".", "").replace(",", ".")
         registros.append({
             "REFERENCIA": m.group("ref").strip(),
-            "IMPORTE_TPV": float(imp)
+            "IMPORTE": float(imp)
         })
 
-    return pd.DataFrame(registros)
+    df = pd.DataFrame(registros)
+
+    # Excel en memoria
+    buffer = BytesIO()
+    df.to_excel(buffer, index=False, engine="openpyxl")
+    buffer.seek(0)
+    return buffer, df
 
 
 def limpiar_importe(valor, origen="auto"):
@@ -70,17 +76,32 @@ def similitud(a, b):
     coincidencias = sum(1 for x, y in zip(a, b) if x == y)
     return coincidencias / max(len(a), len(b))
 
+
 # ==========================
-# PROCESAMIENTO
+# PREVISUALIZACIÓN PDF COMO TABLA
+# ==========================
+if pdf_file:
+    st.subheader("Vista previa de PDF convertido a tabla")
+    buffer_pdf, df_pdf_tabla = pdf_a_tabla_excel(pdf_file)
+    st.dataframe(df_pdf_tabla)
+
+    st.download_button(
+        label="Descargar tabla del PDF en Excel",
+        data=buffer_pdf,
+        file_name="pdf_a_tabla.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+# ==========================
+# PROCESAMIENTO CONCILIACIÓN
 # ==========================
 if pdf_file and excel_file:
-    st.success("Archivos cargados correctamente")
+    st.success("Archivos cargados correctamente. Realizando conciliación...")
 
     # Leer PDF
-    df_tpv = leer_pdf_tpv(pdf_file)
-    df_tpv = df_tpv.rename(columns=str.upper)
+    df_tpv = df_pdf_tabla.rename(columns=str.upper)
     df_tpv["REFERENCIA"] = df_tpv["REFERENCIA"].astype(str).str.strip()
-    df_tpv["IMPORTE_TPV"] = df_tpv["IMPORTE_TPV"].apply(lambda x: limpiar_importe(x, origen="pdf"))
+    df_tpv["IMPORTE_TPV"] = df_tpv["IMPORTE"].apply(lambda x: limpiar_importe(x, origen="pdf"))
 
     # Leer Excel
     df_alb = pd.read_excel(excel_file)
@@ -98,7 +119,7 @@ if pdf_file and excel_file:
         right_on="REFERENCIA"
     )
 
-    # Lógica de conciliación
+    # Conciliación
     df_resultado["ESTADO COBRO"] = "NO COBRADO"
     df_resultado.loc[df_resultado["IMPORTE_TPV"].notna(), "ESTADO COBRO"] = "COBRADO"
 
@@ -111,12 +132,11 @@ if pdf_file and excel_file:
         "OBSERVACIONES"
     ] = "Importe no coincide (posible referencia mal escrita)"
 
-    # Detección de referencias mal escritas
+    # Detección referencias mal escritas
     for idx, row in df_resultado.iterrows():
         if row["ESTADO COBRO"] == "NO COBRADO":
             importe = row["IMPORTE_ALBARAN"]
             cliente = row["Venta a-Nº cliente"]
-
             candidatos = df_tpv[df_tpv["IMPORTE_TPV"].sub(importe).abs() < 0.01].copy()
             if not candidatos.empty:
                 candidatos["SIMILITUD"] = candidatos["REFERENCIA"].apply(lambda x: similitud(cliente, x))
@@ -131,7 +151,7 @@ if pdf_file and excel_file:
                     )
 
     # ==========================
-    # RESULTADOS CON ESTILOS
+    # RESULTADOS CON ESTILO
     # ==========================
     st.subheader("Resultado de la conciliación")
 
@@ -146,16 +166,16 @@ if pdf_file and excel_file:
     st.dataframe(df_resultado.style.apply(colorear_filas, axis=1), use_container_width=True)
 
     # ==========================
-    # DESCARGA CORRECTA
+    # DESCARGA RESULTADOS
     # ==========================
-    buffer = BytesIO()
+    buffer_resultado = BytesIO()
     output = df_resultado.copy()
-    output.to_excel(buffer, index=False, engine="openpyxl")
-    buffer.seek(0)
+    output.to_excel(buffer_resultado, index=False, engine="openpyxl")
+    buffer_resultado.seek(0)
 
     st.download_button(
         label="Descargar resultado en Excel",
-        data=buffer,
+        data=buffer_resultado,
         file_name="conciliacion_tpv.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
