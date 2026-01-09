@@ -5,7 +5,15 @@ import re
 from io import BytesIO
 
 st.set_page_config(page_title="Conciliación cobros TPV", layout="wide")
-st.title("Conciliación de cobros TPV vs Albaranes")
+st.title("Conciliación cobros TPV vs Albaranes")
+
+st.markdown("""
+- Extrae **Comercio / Terminal, Referencia e Importe** desde PDF TPV
+- Convierte el PDF a Excel
+- Concilia con Excel de albaranes
+- Permite filtrar por **Comercio / Terminal**
+- Exporta Excel con **coma decimal y sin separador de miles**
+""")
 
 # ==========================
 # SUBIDA DE ARCHIVOS
@@ -14,14 +22,15 @@ pdf_file = st.file_uploader("Sube el PDF de cobros TPV", type=["pdf"])
 excel_file = st.file_uploader("Sube el Excel de albaranes", type=["xlsx", "xls"])
 
 # ==========================
-# FUNCIONES
+# LECTOR PDF REAL (CLAVE)
 # ==========================
-def pdf_a_tabla_excel(pdf):
+def leer_pdf_tpv(pdf):
     registros = []
 
-    patron_comercio_terminal = re.compile(r'^\d{9}\s*/$')
-    patron_importe = re.compile(r'(\d+\.\d{2})')
-    patron_referencia = re.compile(r'\b(\d{5})\b')
+    patron_comercio = re.compile(r'^\d{9}\s*/$')       # 354015505/
+    patron_terminal = re.compile(r'^\d{1,3}$')        # 10
+    patron_importe = re.compile(r'\d+\.\d{2}')        # 153.49
+    patron_ref = re.compile(r'\b\d{5}\b')             # 28637
 
     comercio_terminal_actual = ""
 
@@ -32,29 +41,29 @@ def pdf_a_tabla_excel(pdf):
                 continue
 
             lineas = [l.strip() for l in text.split("\n") if l.strip()]
-
             i = 0
+
             while i < len(lineas) - 1:
 
-                # --- COMERCIO / TERMINAL (2 líneas) ---
-                if patron_comercio_terminal.match(lineas[i]):
-                    comercio = lineas[i].replace("/", "").strip()
-                    terminal = lineas[i + 1].strip()
+                # --- Comercio / Terminal en dos líneas ---
+                if patron_comercio.match(lineas[i]) and patron_terminal.match(lineas[i + 1]):
+                    comercio = lineas[i].replace("/", "")
+                    terminal = lineas[i + 1]
                     comercio_terminal_actual = f"{comercio} / {terminal}"
                     i += 2
                     continue
 
-                # --- IMPORTE ---
+                # --- Importe ---
                 m_importe = patron_importe.search(lineas[i])
                 if m_importe:
-                    importe = float(m_importe.group(1))
+                    importe = float(m_importe.group())
 
-                    # Buscar referencia en las siguientes líneas
+                    # Buscar referencia cerca
                     ref = None
-                    for j in range(i, min(i + 4, len(lineas))):
-                        m_ref = patron_referencia.search(lineas[j])
+                    for j in range(i, min(i + 5, len(lineas))):
+                        m_ref = patron_ref.search(lineas[j])
                         if m_ref:
-                            ref = m_ref.group(1)
+                            ref = m_ref.group()
                             break
 
                     if ref:
@@ -68,20 +77,22 @@ def pdf_a_tabla_excel(pdf):
 
     return pd.DataFrame(registros)
 
-
-def limpiar_importe_excel(valor):
+# ==========================
+# LIMPIEZA IMPORTES EXCEL
+# ==========================
+def limpiar_importe_excel(v):
     try:
-        return float(str(valor).replace(",", "."))
+        return float(str(v).replace(",", "."))
     except:
         return None
 
-
 # ==========================
-# PREVISUALIZACIÓN PDF
+# PDF → TABLA
 # ==========================
 if pdf_file:
     st.subheader("PDF convertido a tabla")
-    df_pdf, buffer_pdf = pdf_a_tabla_excel(pdf_file)
+
+    df_pdf = leer_pdf_tpv(pdf_file)
 
     df_vista_pdf = df_pdf.copy()
     df_vista_pdf["IMPORTE"] = df_vista_pdf["IMPORTE"].apply(
@@ -90,10 +101,14 @@ if pdf_file:
 
     st.dataframe(df_vista_pdf, use_container_width=True)
 
+    buffer_pdf = BytesIO()
+    df_vista_pdf.to_excel(buffer_pdf, index=False, engine="openpyxl")
+    buffer_pdf.seek(0)
+
     st.download_button(
         "Descargar Excel del PDF",
         data=buffer_pdf,
-        file_name="tpv_convertido.xlsx",
+        file_name="tpv_pdf_convertido.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
@@ -140,7 +155,7 @@ if pdf_file and excel_file:
     ] = "Importe distinto"
 
     # ==========================
-    # FILTRO COMERCIO / TERMINAL
+    # FILTRO COMERCIO
     # ==========================
     st.subheader("Filtro por Comercio / Terminal")
 
@@ -171,7 +186,7 @@ if pdf_file and excel_file:
     buffer_out.seek(0)
 
     st.download_button(
-        "Descargar conciliación",
+        "Descargar conciliación en Excel",
         data=buffer_out,
         file_name="conciliacion_tpv.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
