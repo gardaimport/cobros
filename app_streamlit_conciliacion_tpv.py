@@ -4,35 +4,23 @@ import pdfplumber
 import re
 from io import BytesIO
 
-st.set_page_config(page_title="Conciliación cobros TPV", layout="wide")
+st.set_page_config(page_title="Conciliación TPV", layout="wide")
 st.title("Conciliación cobros TPV vs Albaranes")
 
-st.markdown("""
-- Extrae **Comercio / Terminal, Referencia e Importe** desde PDF TPV
-- Convierte el PDF a Excel
-- Concilia con Excel de albaranes
-- Permite filtrar por **Comercio / Terminal**
-- Exporta Excel con **coma decimal y sin separador de miles**
-""")
-
-# ==========================
-# SUBIDA DE ARCHIVOS
-# ==========================
-pdf_file = st.file_uploader("Sube el PDF de cobros TPV", type=["pdf"])
+pdf_file = st.file_uploader("Sube el PDF TPV", type=["pdf"])
 excel_file = st.file_uploader("Sube el Excel de albaranes", type=["xlsx", "xls"])
 
 # ==========================
-# LECTOR PDF REAL (CLAVE)
+# LECTOR PDF ROBUSTO
 # ==========================
-def leer_pdf_tpv(pdf):
+def leer_pdf_tpv(pdf, debug=False):
     registros = []
-
-    patron_comercio = re.compile(r'^\d{9}\s*/$')       # 354015505/
-    patron_terminal = re.compile(r'^\d{1,3}$')        # 10
-    patron_importe = re.compile(r'\d+\.\d{2}')        # 153.49
-    patron_ref = re.compile(r'\b\d{5}\b')             # 28637
-
     comercio_terminal_actual = ""
+
+    patron_importe = re.compile(r'\d+\.\d{2}')
+    patron_ref = re.compile(r'\b\d{5}\b')
+
+    debug_lineas = []
 
     with pdfplumber.open(pdf) as pdf_doc:
         for page in pdf_doc.pages:
@@ -41,26 +29,44 @@ def leer_pdf_tpv(pdf):
                 continue
 
             lineas = [l.strip() for l in text.split("\n") if l.strip()]
+            debug_lineas.extend(lineas)
+
             i = 0
+            while i < len(lineas):
 
-            while i < len(lineas) - 1:
+                linea = lineas[i]
 
-                # --- Comercio / Terminal en dos líneas ---
-                if patron_comercio.match(lineas[i]) and patron_terminal.match(lineas[i + 1]):
-                    comercio = lineas[i].replace("/", "")
-                    terminal = lineas[i + 1]
-                    comercio_terminal_actual = f"{comercio} / {terminal}"
-                    i += 2
-                    continue
+                # ==========================
+                # COMERCIO / TERMINAL (ROBUSTO)
+                # ==========================
+                if "/" in linea and sum(c.isdigit() for c in linea) >= 9:
+                    numeros = re.findall(r'\d+', linea)
 
-                # --- Importe ---
-                m_importe = patron_importe.search(lineas[i])
-                if m_importe:
-                    importe = float(m_importe.group())
+                    if len(numeros) >= 1:
+                        comercio = numeros[0]
+                        terminal = None
 
-                    # Buscar referencia cerca
+                        # ¿Terminal en la misma línea?
+                        if len(numeros) >= 2:
+                            terminal = numeros[1]
+
+                        # ¿Terminal en la siguiente?
+                        elif i + 1 < len(lineas):
+                            if lineas[i + 1].isdigit():
+                                terminal = lineas[i + 1]
+
+                        if terminal:
+                            comercio_terminal_actual = f"{comercio} / {terminal}"
+
+                # ==========================
+                # IMPORTE
+                # ==========================
+                m_imp = patron_importe.search(linea)
+                if m_imp:
+                    importe = float(m_imp.group())
+
                     ref = None
-                    for j in range(i, min(i + 5, len(lineas))):
+                    for j in range(i, min(i + 6, len(lineas))):
                         m_ref = patron_ref.search(lineas[j])
                         if m_ref:
                             ref = m_ref.group()
@@ -75,24 +81,24 @@ def leer_pdf_tpv(pdf):
 
                 i += 1
 
-    return pd.DataFrame(registros)
+    df = pd.DataFrame(registros)
+    return df, debug_lineas
 
-# ==========================
-# LIMPIEZA IMPORTES EXCEL
-# ==========================
+
 def limpiar_importe_excel(v):
     try:
         return float(str(v).replace(",", "."))
     except:
         return None
 
+
 # ==========================
-# PDF → TABLA
+# PDF → TABLA + DEBUG
 # ==========================
 if pdf_file:
     st.subheader("PDF convertido a tabla")
 
-    df_pdf = leer_pdf_tpv(pdf_file)
+    df_pdf, debug_lineas = leer_pdf_tpv(pdf_file, debug=True)
 
     df_vista_pdf = df_pdf.copy()
     df_vista_pdf["IMPORTE"] = df_vista_pdf["IMPORTE"].apply(
@@ -100,6 +106,10 @@ if pdf_file:
     )
 
     st.dataframe(df_vista_pdf, use_container_width=True)
+
+    # ===== DEBUG REAL =====
+    with st.expander("🔍 Ver texto REAL leído del PDF (diagnóstico)"):
+        st.write(debug_lineas)
 
     buffer_pdf = BytesIO()
     df_vista_pdf.to_excel(buffer_pdf, index=False, engine="openpyxl")
@@ -116,7 +126,7 @@ if pdf_file:
 # CONCILIACIÓN
 # ==========================
 if pdf_file and excel_file:
-    st.success("Archivos cargados. Ejecutando conciliación…")
+    st.success("Conciliando…")
 
     df_tpv = df_pdf.copy()
     df_tpv["REFERENCIA"] = df_tpv["REFERENCIA"].astype(str)
@@ -154,23 +164,8 @@ if pdf_file and excel_file:
         "OBSERVACIONES"
     ] = "Importe distinto"
 
-    # ==========================
-    # FILTRO COMERCIO
-    # ==========================
-    st.subheader("Filtro por Comercio / Terminal")
+    st.subheader("Resultado conciliación")
 
-    opciones = ["Todos"] + sorted(
-        df_res["COMERCIO_TERMINAL"].dropna().unique().tolist()
-    )
-
-    sel = st.selectbox("Selecciona comercio", opciones)
-
-    if sel != "Todos":
-        df_res = df_res[df_res["COMERCIO_TERMINAL"] == sel]
-
-    # ==========================
-    # VISTA FINAL
-    # ==========================
     df_vista = df_res.copy()
     for c in ["IMPORTE_ALBARAN", "IMPORTE_TPV", "DIFERENCIA"]:
         if c in df_vista:
@@ -178,7 +173,6 @@ if pdf_file and excel_file:
                 lambda x: "" if pd.isna(x) else f"{x:.2f}".replace(".", ",")
             )
 
-    st.subheader("Resultado conciliación")
     st.dataframe(df_vista, use_container_width=True)
 
     buffer_out = BytesIO()
@@ -186,7 +180,7 @@ if pdf_file and excel_file:
     buffer_out.seek(0)
 
     st.download_button(
-        "Descargar conciliación en Excel",
+        "Descargar conciliación",
         data=buffer_out,
         file_name="conciliacion_tpv.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
