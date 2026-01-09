@@ -18,9 +18,12 @@ excel_file = st.file_uploader("Sube el Excel de albaranes", type=["xlsx", "xls"]
 # ==========================
 def pdf_a_tabla_excel(pdf):
     registros = []
-    comercio_actual = ""
 
-    patron_importe_ref = re.compile(r'(?P<importe>\d+\.\d{2}).*?(?P<ref>\d{5})')
+    patron_comercio_terminal = re.compile(r'^\d{9}\s*/$')
+    patron_importe = re.compile(r'(\d+\.\d{2})')
+    patron_referencia = re.compile(r'\b(\d{5})\b')
+
+    comercio_terminal_actual = ""
 
     with pdfplumber.open(pdf) as pdf_doc:
         for page in pdf_doc.pages:
@@ -28,44 +31,42 @@ def pdf_a_tabla_excel(pdf):
             if not text:
                 continue
 
-            lineas = text.split("\n")
+            lineas = [l.strip() for l in text.split("\n") if l.strip()]
 
-            for i, linea in enumerate(lineas):
-                linea_limpia = linea.strip()
+            i = 0
+            while i < len(lineas) - 1:
 
-                # --- DETECCIÓN COMERCIO / TERMINAL ---
-                if (
-                    "comercio" in linea_limpia.lower()
-                    and "terminal" in linea_limpia.lower()
-                ):
-                    valor = re.sub(
-                        r'(?i).*comercio\s*/?\s*terminal[:\s]*',
-                        '',
-                        linea_limpia
-                    ).strip()
+                # --- COMERCIO / TERMINAL (2 líneas) ---
+                if patron_comercio_terminal.match(lineas[i]):
+                    comercio = lineas[i].replace("/", "").strip()
+                    terminal = lineas[i + 1].strip()
+                    comercio_terminal_actual = f"{comercio} / {terminal}"
+                    i += 2
+                    continue
 
-                    # Si no hay valor, usar la línea siguiente
-                    if not valor and i + 1 < len(lineas):
-                        valor = lineas[i + 1].strip()
+                # --- IMPORTE ---
+                m_importe = patron_importe.search(lineas[i])
+                if m_importe:
+                    importe = float(m_importe.group(1))
 
-                    comercio_actual = valor
+                    # Buscar referencia en las siguientes líneas
+                    ref = None
+                    for j in range(i, min(i + 4, len(lineas))):
+                        m_ref = patron_referencia.search(lineas[j])
+                        if m_ref:
+                            ref = m_ref.group(1)
+                            break
 
-                # --- DETECCIÓN IMPORTE + REFERENCIA ---
-                m = patron_importe_ref.search(linea_limpia)
-                if m:
-                    registros.append({
-                        "COMERCIO_TERMINAL": comercio_actual,
-                        "REFERENCIA": m.group("ref"),
-                        "IMPORTE": float(m.group("importe"))
-                    })
+                    if ref:
+                        registros.append({
+                            "COMERCIO_TERMINAL": comercio_terminal_actual,
+                            "REFERENCIA": ref,
+                            "IMPORTE": importe
+                        })
 
-    df = pd.DataFrame(registros)
+                i += 1
 
-    buffer = BytesIO()
-    df.to_excel(buffer, index=False, engine="openpyxl")
-    buffer.seek(0)
-
-    return df, buffer
+    return pd.DataFrame(registros)
 
 
 def limpiar_importe_excel(valor):
