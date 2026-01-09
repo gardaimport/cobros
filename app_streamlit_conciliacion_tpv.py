@@ -5,20 +5,10 @@ import re
 from io import BytesIO
 
 st.set_page_config(page_title="Conciliación cobros TPV", layout="wide")
-
 st.title("Conciliación de cobros TPV vs Albaranes")
 
-st.markdown("""
-Esta aplicación permite:
-- Subir un **PDF de cobros TPV**
-- Extraer **Comercio / Terminal, Referencia e Importe**
-- Convertir el PDF a **Excel**
-- Conciliar con el **Excel de albaranes**
-- Descargar resultado con **coma decimal y sin separador de miles**
-""")
-
 # ==========================
-# CARGA DE ARCHIVOS
+# SUBIDA DE ARCHIVOS
 # ==========================
 pdf_file = st.file_uploader("Sube el PDF de cobros TPV", type=["pdf"])
 excel_file = st.file_uploader("Sube el Excel de albaranes", type=["xlsx", "xls"])
@@ -26,18 +16,11 @@ excel_file = st.file_uploader("Sube el Excel de albaranes", type=["xlsx", "xls"]
 # ==========================
 # FUNCIONES
 # ==========================
-def pdf_a_tabla_excel_linea(pdf):
-    """
-    Extrae:
-    - Comercio/Terminal
-    - Referencia (5 dígitos)
-    - Importe con punto decimal
-    """
+def pdf_a_tabla_excel(pdf):
     registros = []
-    comercio_actual = None
+    comercio_actual = ""
 
-    patron_comercio = re.compile(r'Comercio\s*/\s*Terminal[:\s]+(.+)', re.IGNORECASE)
-    patron_linea = re.compile(r'(?P<importe>\d+\.\d{2}).*?(?P<ref>\d{5})')
+    patron_importe_ref = re.compile(r'(?P<importe>\d+\.\d{2}).*?(?P<ref>\d{5})')
 
     with pdfplumber.open(pdf) as pdf_doc:
         for page in pdf_doc.pages:
@@ -45,14 +28,30 @@ def pdf_a_tabla_excel_linea(pdf):
             if not text:
                 continue
 
-            for linea in text.split("\n"):
-                # Detectar comercio / terminal
-                m_com = patron_comercio.search(linea)
-                if m_com:
-                    comercio_actual = m_com.group(1).strip()
+            lineas = text.split("\n")
 
-                # Detectar importe + referencia
-                m = patron_linea.search(linea)
+            for i, linea in enumerate(lineas):
+                linea_limpia = linea.strip()
+
+                # --- DETECCIÓN COMERCIO / TERMINAL ---
+                if (
+                    "comercio" in linea_limpia.lower()
+                    and "terminal" in linea_limpia.lower()
+                ):
+                    valor = re.sub(
+                        r'(?i).*comercio\s*/?\s*terminal[:\s]*',
+                        '',
+                        linea_limpia
+                    ).strip()
+
+                    # Si no hay valor, usar la línea siguiente
+                    if not valor and i + 1 < len(lineas):
+                        valor = lineas[i + 1].strip()
+
+                    comercio_actual = valor
+
+                # --- DETECCIÓN IMPORTE + REFERENCIA ---
+                m = patron_importe_ref.search(linea_limpia)
                 if m:
                     registros.append({
                         "COMERCIO_TERMINAL": comercio_actual,
@@ -66,33 +65,22 @@ def pdf_a_tabla_excel_linea(pdf):
     df.to_excel(buffer, index=False, engine="openpyxl")
     buffer.seek(0)
 
-    return buffer, df
+    return df, buffer
 
 
-def limpiar_importe(valor, origen):
+def limpiar_importe_excel(valor):
     try:
-        v = str(valor).replace("€", "").strip()
-        if origen == "pdf":
-            return float(v)
-        if origen == "excel":
-            return float(v.replace(",", "."))
+        return float(str(valor).replace(",", "."))
     except:
         return None
-
-
-def similitud(a, b):
-    a, b = str(a), str(b)
-    coincidencias = sum(1 for x, y in zip(a, b) if x == y)
-    return coincidencias / max(len(a), len(b))
 
 
 # ==========================
 # PREVISUALIZACIÓN PDF
 # ==========================
 if pdf_file:
-    st.subheader("Vista previa del PDF convertido a tabla")
-
-    buffer_pdf, df_pdf = pdf_a_tabla_excel_linea(pdf_file)
+    st.subheader("PDF convertido a tabla")
+    df_pdf, buffer_pdf = pdf_a_tabla_excel(pdf_file)
 
     df_vista_pdf = df_pdf.copy()
     df_vista_pdf["IMPORTE"] = df_vista_pdf["IMPORTE"].apply(
@@ -104,7 +92,7 @@ if pdf_file:
     st.download_button(
         "Descargar Excel del PDF",
         data=buffer_pdf,
-        file_name="pdf_tpv_convertido.xlsx",
+        file_name="tpv_convertido.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
@@ -112,78 +100,78 @@ if pdf_file:
 # CONCILIACIÓN
 # ==========================
 if pdf_file and excel_file:
-    st.success("Archivos cargados. Realizando conciliación...")
+    st.success("Archivos cargados. Ejecutando conciliación…")
 
     df_tpv = df_pdf.copy()
     df_tpv["REFERENCIA"] = df_tpv["REFERENCIA"].astype(str)
-    df_tpv["IMPORTE_TPV"] = df_tpv["IMPORTE"].apply(lambda x: limpiar_importe(x, "pdf"))
 
     df_alb = pd.read_excel(excel_file)
     df_alb["Venta a-Nº cliente"] = df_alb["Venta a-Nº cliente"].astype(str)
     df_alb["IMPORTE_ALBARAN"] = df_alb["Importe envío IVA incluido"].apply(
-        lambda x: limpiar_importe(x, "excel")
+        limpiar_importe_excel
     )
 
     tpv_agrupado = df_tpv.groupby(
         ["REFERENCIA", "COMERCIO_TERMINAL"],
         as_index=False
-    )["IMPORTE_TPV"].sum()
+    )["IMPORTE"].sum()
 
-    df_resultado = df_alb.merge(
+    df_res = df_alb.merge(
         tpv_agrupado,
         how="left",
         left_on="Venta a-Nº cliente",
         right_on="REFERENCIA"
     )
 
-    df_resultado["ESTADO COBRO"] = "NO COBRADO"
-    df_resultado.loc[df_resultado["IMPORTE_TPV"].notna(), "ESTADO COBRO"] = "COBRADO"
+    df_res.rename(columns={"IMPORTE": "IMPORTE_TPV"}, inplace=True)
 
-    df_resultado["DIFERENCIA"] = (
-        df_resultado["IMPORTE_ALBARAN"] - df_resultado["IMPORTE_TPV"]
+    df_res["ESTADO COBRO"] = "NO COBRADO"
+    df_res.loc[df_res["IMPORTE_TPV"].notna(), "ESTADO COBRO"] = "COBRADO"
+
+    df_res["DIFERENCIA"] = df_res["IMPORTE_ALBARAN"] - df_res["IMPORTE_TPV"]
+
+    df_res["OBSERVACIONES"] = ""
+    df_res.loc[df_res["IMPORTE_TPV"].isna(), "OBSERVACIONES"] = "Sin cobro TPV"
+    df_res.loc[
+        (df_res["IMPORTE_TPV"].notna()) &
+        (df_res["DIFERENCIA"].abs() > 0.01),
+        "OBSERVACIONES"
+    ] = "Importe distinto"
+
+    # ==========================
+    # FILTRO COMERCIO / TERMINAL
+    # ==========================
+    st.subheader("Filtro por Comercio / Terminal")
+
+    opciones = ["Todos"] + sorted(
+        df_res["COMERCIO_TERMINAL"].dropna().unique().tolist()
     )
 
-    df_resultado["OBSERVACIONES"] = ""
-    df_resultado.loc[
-        df_resultado["ESTADO COBRO"] == "NO COBRADO",
-        "OBSERVACIONES"
-    ] = "Sin cobro TPV"
+    sel = st.selectbox("Selecciona comercio", opciones)
 
-    df_resultado.loc[
-        (df_resultado["ESTADO COBRO"] == "COBRADO") &
-        (df_resultado["DIFERENCIA"].abs() > 0.01),
-        "OBSERVACIONES"
-    ] = "Importe no coincide"
+    if sel != "Todos":
+        df_res = df_res[df_res["COMERCIO_TERMINAL"] == sel]
 
-    # Vista Streamlit con coma decimal
-    df_vista = df_resultado.copy()
-    for col in ["IMPORTE_ALBARAN", "IMPORTE_TPV", "DIFERENCIA"]:
-        if col in df_vista:
-            df_vista[col] = df_vista[col].apply(
+    # ==========================
+    # VISTA FINAL
+    # ==========================
+    df_vista = df_res.copy()
+    for c in ["IMPORTE_ALBARAN", "IMPORTE_TPV", "DIFERENCIA"]:
+        if c in df_vista:
+            df_vista[c] = df_vista[c].apply(
                 lambda x: "" if pd.isna(x) else f"{x:.2f}".replace(".", ",")
             )
 
-    st.subheader("Resultado de la conciliación")
+    st.subheader("Resultado conciliación")
     st.dataframe(df_vista, use_container_width=True)
 
-    # Exportación final
-    df_export = df_resultado.copy()
-    for col in ["IMPORTE_ALBARAN", "IMPORTE_TPV", "DIFERENCIA"]:
-        if col in df_export:
-            df_export[col] = df_export[col].apply(
-                lambda x: "" if pd.isna(x) else f"{x:.2f}".replace(".", ",")
-            )
-
     buffer_out = BytesIO()
-    df_export.to_excel(buffer_out, index=False, engine="openpyxl")
+    df_vista.to_excel(buffer_out, index=False, engine="openpyxl")
     buffer_out.seek(0)
 
     st.download_button(
-        "Descargar conciliación en Excel",
+        "Descargar conciliación",
         data=buffer_out,
         file_name="conciliacion_tpv.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-
-else:
-    st.info("Sube ambos archivos para iniciar la conciliación")
