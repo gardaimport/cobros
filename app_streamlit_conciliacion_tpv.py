@@ -11,15 +11,13 @@ pdf_file = st.file_uploader("Sube el PDF TPV", type=["pdf"])
 excel_file = st.file_uploader("Sube el Excel de albaranes", type=["xlsx", "xls"])
 
 # ==================================================
-# LECTOR PDF COMPLETO (UNA FILA = UN MOVIMIENTO)
+# LECTOR PDF COMPLETO
 # ==================================================
 def leer_pdf_tpv(pdf):
     registros = []
     comercio = ""
     terminal = ""
 
-    patron_fecha = re.compile(r'\d{4}-\d{2}-\d{2}')
-    patron_hora = re.compile(r'\d{2}:\d{2}:\d{2}')
     patron_importe = re.compile(r'\d+\.\d{2}')
     patron_ref = re.compile(r'\b\d{5}\b')
 
@@ -33,12 +31,9 @@ def leer_pdf_tpv(pdf):
             i = 0
 
             while i < len(lineas):
-
                 linea = lineas[i]
 
-                # -------------------------------
-                # COMERCIO / TERMINAL (ROBUSTO)
-                # -------------------------------
+                # Comercio / Terminal
                 if "/" in linea and sum(c.isdigit() for c in linea) >= 9:
                     nums = re.findall(r'\d+', linea)
                     if len(nums) >= 1:
@@ -48,49 +43,28 @@ def leer_pdf_tpv(pdf):
                         elif i + 1 < len(lineas) and lineas[i + 1].isdigit():
                             terminal = lineas[i + 1]
 
-                # -------------------------------
-                # MOVIMIENTO TPV
-                # -------------------------------
+                # Movimiento
                 m_imp = patron_importe.search(linea)
                 if m_imp:
                     importe = float(m_imp.group())
+                    ref = None
 
-                    fecha = ""
-                    hora = ""
-                    referencia = ""
-
-                    # Buscar datos alrededor
                     for j in range(i, min(i + 6, len(lineas))):
-                        if not fecha:
-                            m_f = patron_fecha.search(lineas[j])
-                            if m_f:
-                                fecha = m_f.group()
+                        m_ref = patron_ref.search(lineas[j])
+                        if m_ref:
+                            ref = m_ref.group()
+                            break
 
-                        if not hora:
-                            m_h = patron_hora.search(lineas[j])
-                            if m_h:
-                                hora = m_h.group()
-
-                        if not referencia:
-                            m_r = patron_ref.search(lineas[j])
-                            if m_r:
-                                referencia = m_r.group()
-
-                    if referencia:
+                    if ref:
                         registros.append({
-                            "FECHA": fecha,
-                            "HORA": hora,
-                            "COMERCIO": comercio,
-                            "TERMINAL_TPV": terminal,
-                            "REFERENCIA": referencia,
+                            "REFERENCIA": ref,
                             "IMPORTE_TPV": importe,
-                            "LINEA_ORIGEN": linea
+                            "TERMINAL_TPV": terminal
                         })
 
                 i += 1
 
     return pd.DataFrame(registros)
-
 
 def limpiar_importe_excel(v):
     try:
@@ -98,92 +72,82 @@ def limpiar_importe_excel(v):
     except:
         return None
 
-
 # ==================================================
-# PDF → TABLA COMPLETA
-# ==================================================
-if pdf_file:
-    st.subheader("PDF convertido a tabla completa")
-
-    df_pdf = leer_pdf_tpv(pdf_file)
-
-    df_vista_pdf = df_pdf.copy()
-    df_vista_pdf["IMPORTE_TPV"] = df_vista_pdf["IMPORTE_TPV"].apply(
-        lambda x: f"{x:.2f}".replace(".", ",")
-    )
-
-    st.dataframe(df_vista_pdf, use_container_width=True)
-
-    buffer_pdf = BytesIO()
-    df_vista_pdf.to_excel(buffer_pdf, index=False, engine="openpyxl")
-    buffer_pdf.seek(0)
-
-    st.download_button(
-        "Descargar Excel completo del PDF",
-        data=buffer_pdf,
-        file_name="tpv_pdf_completo.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
-# ==================================================
-# CONCILIACIÓN
+# PROCESO
 # ==================================================
 if pdf_file and excel_file:
-    st.success("Ejecutando conciliación…")
-
-    df_tpv = df_pdf.copy()
-    df_tpv["REFERENCIA"] = df_tpv["REFERENCIA"].astype(str)
-
+    df_tpv = leer_pdf_tpv(pdf_file)
     df_alb = pd.read_excel(excel_file)
-    df_alb["Venta a-Nº cliente"] = df_alb["Venta a-Nº cliente"].astype(str)
-    df_alb["IMPORTE_ALBARAN"] = df_alb["Importe envío IVA incluido"].apply(
-        limpiar_importe_excel
-    )
 
-    # Agrupar TPV (si un cliente paga varias veces)
-    tpv_agrupado = df_tpv.groupby(
-        ["REFERENCIA", "TERMINAL_TPV"],
-        as_index=False
-    )["IMPORTE_TPV"].sum()
+    df_alb["Venta a-Nº cliente"] = df_alb["Venta a-Nº cliente"].astype(str)
+    df_alb["IMPORTE_ALBARAN"] = df_alb["Importe envío IVA incluido"].apply(limpiar_importe_excel)
+
+    # Totales por cliente (albaranes)
+    totales_cliente = df_alb.groupby("Venta a-Nº cliente")["IMPORTE_ALBARAN"].agg(["sum", "count"]).reset_index()
+    totales_cliente.columns = ["CLIENTE", "TOTAL_CLIENTE", "NUM_ALBARANES"]
+
+    # Totales TPV por referencia
+    tpv_por_ref = df_tpv.groupby("REFERENCIA", as_index=False).agg({
+        "IMPORTE_TPV": "sum",
+        "TERMINAL_TPV": "first"
+    })
 
     df_res = df_alb.merge(
-        tpv_agrupado,
+        tpv_por_ref,
         how="left",
         left_on="Venta a-Nº cliente",
         right_on="REFERENCIA"
     )
 
+    df_res = df_res.merge(
+        totales_cliente,
+        how="left",
+        left_on="Venta a-Nº cliente",
+        right_on="CLIENTE"
+    )
+
     df_res["ESTADO COBRO"] = "NO COBRADO"
-    df_res.loc[df_res["IMPORTE_TPV"].notna(), "ESTADO COBRO"] = "COBRADO"
-
-    df_res["DIFERENCIA"] = df_res["IMPORTE_ALBARAN"] - df_res["IMPORTE_TPV"]
-
     df_res["OBSERVACIONES"] = ""
-    df_res.loc[df_res["IMPORTE_TPV"].isna(), "OBSERVACIONES"] = "Sin cobro TPV"
-    df_res.loc[
-        (df_res["IMPORTE_TPV"].notna()) &
-        (df_res["DIFERENCIA"].abs() > 0.01),
-        "OBSERVACIONES"
-    ] = "Importe distinto"
 
-    # Formato final
+    # Coincidencia directa
+    mask_directo = df_res["IMPORTE_TPV"].notna() & (abs(df_res["IMPORTE_ALBARAN"] - df_res["IMPORTE_TPV"]) < 0.01)
+    df_res.loc[mask_directo, "ESTADO COBRO"] = "COBRADO"
+    df_res.loc[mask_directo, "OBSERVACIONES"] = "Cobro individual correcto"
+
+    # Coincidencia por total cliente
+    mask_total = (
+        df_res["IMPORTE_TPV"].notna() &
+        (~mask_directo) &
+        (abs(df_res["TOTAL_CLIENTE"] - df_res["IMPORTE_TPV"]) < 0.01)
+    )
+
+    df_res.loc[mask_total, "ESTADO COBRO"] = "COBRADO"
+    df_res.loc[mask_total, "OBSERVACIONES"] = df_res[mask_total].apply(
+        lambda r: f"Cobrado {r['IMPORTE_TPV']:.2f} (total de {int(r['NUM_ALBARANES'])} albaranes) – posible error de referencia",
+        axis=1
+    )
+
+    # Sin cobro
+    df_res.loc[df_res["IMPORTE_TPV"].isna(), "OBSERVACIONES"] = "Sin cobro TPV"
+
+    # Formato visual
     df_vista = df_res.copy()
-    for c in ["IMPORTE_ALBARAN", "IMPORTE_TPV", "DIFERENCIA"]:
-        if c in df_vista:
-            df_vista[c] = df_vista[c].apply(
-                lambda x: "" if pd.isna(x) else f"{x:.2f}".replace(".", ",")
-            )
+    for c in ["IMPORTE_ALBARAN", "IMPORTE_TPV", "TOTAL_CLIENTE"]:
+        df_vista[c] = df_vista[c].apply(lambda x: "" if pd.isna(x) else f"{x:.2f}".replace(".", ","))
 
     st.subheader("Resultado conciliación")
     st.dataframe(df_vista, use_container_width=True)
 
-    buffer_out = BytesIO()
-    df_vista.to_excel(buffer_out, index=False, engine="openpyxl")
-    buffer_out.seek(0)
+    buffer = BytesIO()
+    df_vista.to_excel(buffer, index=False, engine="openpyxl")
+    buffer.seek(0)
 
     st.download_button(
         "Descargar conciliación en Excel",
-        data=buffer_out,
+        data=buffer,
         file_name="conciliacion_tpv.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
+else:
+    st.info("Sube el PDF y el Excel para comenzar.")
