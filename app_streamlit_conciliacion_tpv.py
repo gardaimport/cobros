@@ -10,17 +10,18 @@ st.title("Conciliación cobros TPV vs Albaranes")
 pdf_file = st.file_uploader("Sube el PDF TPV", type=["pdf"])
 excel_file = st.file_uploader("Sube el Excel de albaranes", type=["xlsx", "xls"])
 
-# ==========================
-# LECTOR PDF ROBUSTO
-# ==========================
-def leer_pdf_tpv(pdf, debug=False):
+# ==================================================
+# LECTOR PDF COMPLETO (UNA FILA = UN MOVIMIENTO)
+# ==================================================
+def leer_pdf_tpv(pdf):
     registros = []
-    comercio_terminal_actual = ""
+    comercio = ""
+    terminal = ""
 
+    patron_fecha = re.compile(r'\d{4}-\d{2}-\d{2}')
+    patron_hora = re.compile(r'\d{2}:\d{2}:\d{2}')
     patron_importe = re.compile(r'\d+\.\d{2}')
     patron_ref = re.compile(r'\b\d{5}\b')
-
-    debug_lineas = []
 
     with pdfplumber.open(pdf) as pdf_doc:
         for page in pdf_doc.pages:
@@ -29,60 +30,66 @@ def leer_pdf_tpv(pdf, debug=False):
                 continue
 
             lineas = [l.strip() for l in text.split("\n") if l.strip()]
-            debug_lineas.extend(lineas)
-
             i = 0
+
             while i < len(lineas):
 
                 linea = lineas[i]
 
-                # ==========================
+                # -------------------------------
                 # COMERCIO / TERMINAL (ROBUSTO)
-                # ==========================
+                # -------------------------------
                 if "/" in linea and sum(c.isdigit() for c in linea) >= 9:
-                    numeros = re.findall(r'\d+', linea)
+                    nums = re.findall(r'\d+', linea)
+                    if len(nums) >= 1:
+                        comercio = nums[0]
+                        if len(nums) >= 2:
+                            terminal = nums[1]
+                        elif i + 1 < len(lineas) and lineas[i + 1].isdigit():
+                            terminal = lineas[i + 1]
 
-                    if len(numeros) >= 1:
-                        comercio = numeros[0]
-                        terminal = None
-
-                        # ¿Terminal en la misma línea?
-                        if len(numeros) >= 2:
-                            terminal = numeros[1]
-
-                        # ¿Terminal en la siguiente?
-                        elif i + 1 < len(lineas):
-                            if lineas[i + 1].isdigit():
-                                terminal = lineas[i + 1]
-
-                        if terminal:
-                            comercio_terminal_actual = f"{comercio} / {terminal}"
-
-                # ==========================
-                # IMPORTE
-                # ==========================
+                # -------------------------------
+                # MOVIMIENTO TPV
+                # -------------------------------
                 m_imp = patron_importe.search(linea)
                 if m_imp:
                     importe = float(m_imp.group())
 
-                    ref = None
-                    for j in range(i, min(i + 6, len(lineas))):
-                        m_ref = patron_ref.search(lineas[j])
-                        if m_ref:
-                            ref = m_ref.group()
-                            break
+                    fecha = ""
+                    hora = ""
+                    referencia = ""
 
-                    if ref:
+                    # Buscar datos alrededor
+                    for j in range(i, min(i + 6, len(lineas))):
+                        if not fecha:
+                            m_f = patron_fecha.search(lineas[j])
+                            if m_f:
+                                fecha = m_f.group()
+
+                        if not hora:
+                            m_h = patron_hora.search(lineas[j])
+                            if m_h:
+                                hora = m_h.group()
+
+                        if not referencia:
+                            m_r = patron_ref.search(lineas[j])
+                            if m_r:
+                                referencia = m_r.group()
+
+                    if referencia:
                         registros.append({
-                            "COMERCIO_TERMINAL": comercio_terminal_actual,
-                            "REFERENCIA": ref,
-                            "IMPORTE": importe
+                            "FECHA": fecha,
+                            "HORA": hora,
+                            "COMERCIO": comercio,
+                            "TERMINAL_TPV": terminal,
+                            "REFERENCIA": referencia,
+                            "IMPORTE_TPV": importe,
+                            "LINEA_ORIGEN": linea
                         })
 
                 i += 1
 
-    df = pd.DataFrame(registros)
-    return df, debug_lineas
+    return pd.DataFrame(registros)
 
 
 def limpiar_importe_excel(v):
@@ -92,41 +99,37 @@ def limpiar_importe_excel(v):
         return None
 
 
-# ==========================
-# PDF → TABLA + DEBUG
-# ==========================
+# ==================================================
+# PDF → TABLA COMPLETA
+# ==================================================
 if pdf_file:
-    st.subheader("PDF convertido a tabla")
+    st.subheader("PDF convertido a tabla completa")
 
-    df_pdf, debug_lineas = leer_pdf_tpv(pdf_file, debug=True)
+    df_pdf = leer_pdf_tpv(pdf_file)
 
     df_vista_pdf = df_pdf.copy()
-    df_vista_pdf["IMPORTE"] = df_vista_pdf["IMPORTE"].apply(
+    df_vista_pdf["IMPORTE_TPV"] = df_vista_pdf["IMPORTE_TPV"].apply(
         lambda x: f"{x:.2f}".replace(".", ",")
     )
 
     st.dataframe(df_vista_pdf, use_container_width=True)
-
-    # ===== DEBUG REAL =====
-    with st.expander("🔍 Ver texto REAL leído del PDF (diagnóstico)"):
-        st.write(debug_lineas)
 
     buffer_pdf = BytesIO()
     df_vista_pdf.to_excel(buffer_pdf, index=False, engine="openpyxl")
     buffer_pdf.seek(0)
 
     st.download_button(
-        "Descargar Excel del PDF",
+        "Descargar Excel completo del PDF",
         data=buffer_pdf,
-        file_name="tpv_pdf_convertido.xlsx",
+        file_name="tpv_pdf_completo.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
-# ==========================
+# ==================================================
 # CONCILIACIÓN
-# ==========================
+# ==================================================
 if pdf_file and excel_file:
-    st.success("Conciliando…")
+    st.success("Ejecutando conciliación…")
 
     df_tpv = df_pdf.copy()
     df_tpv["REFERENCIA"] = df_tpv["REFERENCIA"].astype(str)
@@ -137,10 +140,11 @@ if pdf_file and excel_file:
         limpiar_importe_excel
     )
 
+    # Agrupar TPV (si un cliente paga varias veces)
     tpv_agrupado = df_tpv.groupby(
-        ["REFERENCIA", "COMERCIO_TERMINAL"],
+        ["REFERENCIA", "TERMINAL_TPV"],
         as_index=False
-    )["IMPORTE"].sum()
+    )["IMPORTE_TPV"].sum()
 
     df_res = df_alb.merge(
         tpv_agrupado,
@@ -148,8 +152,6 @@ if pdf_file and excel_file:
         left_on="Venta a-Nº cliente",
         right_on="REFERENCIA"
     )
-
-    df_res.rename(columns={"IMPORTE": "IMPORTE_TPV"}, inplace=True)
 
     df_res["ESTADO COBRO"] = "NO COBRADO"
     df_res.loc[df_res["IMPORTE_TPV"].notna(), "ESTADO COBRO"] = "COBRADO"
@@ -164,8 +166,7 @@ if pdf_file and excel_file:
         "OBSERVACIONES"
     ] = "Importe distinto"
 
-    st.subheader("Resultado conciliación")
-
+    # Formato final
     df_vista = df_res.copy()
     for c in ["IMPORTE_ALBARAN", "IMPORTE_TPV", "DIFERENCIA"]:
         if c in df_vista:
@@ -173,6 +174,7 @@ if pdf_file and excel_file:
                 lambda x: "" if pd.isna(x) else f"{x:.2f}".replace(".", ",")
             )
 
+    st.subheader("Resultado conciliación")
     st.dataframe(df_vista, use_container_width=True)
 
     buffer_out = BytesIO()
@@ -180,7 +182,7 @@ if pdf_file and excel_file:
     buffer_out.seek(0)
 
     st.download_button(
-        "Descargar conciliación",
+        "Descargar conciliación en Excel",
         data=buffer_out,
         file_name="conciliacion_tpv.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
