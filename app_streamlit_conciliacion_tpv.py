@@ -10,9 +10,6 @@ st.title("Comprobación COBROS TPV")
 pdf_file = st.file_uploader("Sube el PDF de cobros TPV", type=["pdf"])
 excel_file = st.file_uploader("Sube el Excel de albaranes", type=["xlsx", "xls"])
 
-# Nombre de descarga
-nombre_excel = st.text_input("Nombre del archivo Excel a descargar (sin extensión)", "conciliacion_tpv")
-
 # ==========================================================
 # LECTOR PDF
 # ==========================================================
@@ -38,6 +35,7 @@ def leer_pdf_tpv(pdf):
                     importe = float(m_imp.group())
                     ref = None
                     resultado = None
+
                     for j in range(i, min(i + 10, len(lineas))):
                         if not ref:
                             m_ref = patron_ref.search(lineas[j])
@@ -47,6 +45,7 @@ def leer_pdf_tpv(pdf):
                             m_res = patron_resultado.search(lineas[j])
                             if m_res:
                                 resultado = m_res.group()
+
                     if ref and resultado == "AUTORIZADA":
                         registros.append({
                             "REFERENCIA_TPV": ref,
@@ -54,6 +53,7 @@ def leer_pdf_tpv(pdf):
                             "RESULTADO_TPV": resultado
                         })
                 i += 1
+
     return pd.DataFrame(registros)
 
 
@@ -62,6 +62,7 @@ def limpiar_importe_excel(v):
         return float(str(v).replace(",", "."))
     except:
         return None
+
 
 def formato_euro(x):
     return f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -107,21 +108,25 @@ if pdf_file and excel_file:
     df_res["ESTADO COBRO"] = "NO COBRADO"
     df_res["OBSERVACIONES"] = ""
 
-    # Cobro con referencia correcta
+    # Referencia correcta
     mask_ref_ok = df_res["IMPORTE_TPV"].notna()
     df_res.loc[mask_ref_ok, "ESTADO COBRO"] = "COBRADO"
 
     def observaciones_total(row):
         diff = row["IMPORTE_TPV"] - row["TOTAL_CLIENTE"]
         texto = f"Cobrado {formato_euro(row['IMPORTE_TPV'])} (total de {int(row['NUM_ALBARANES'])} albaranes)"
+
         if abs(diff) > 0.01:
             if diff > 0:
                 texto += " – posible cobro albaranes atrasados"
             else:
                 texto += " – posible abono pendiente"
 
-        duplicados = df_tpv[(df_tpv["REFERENCIA_TPV"] == row["Venta a-Nº cliente"]) &
-                            (df_tpv["IMPORTE_TPV"] == row["IMPORTE_TPV"])]
+        duplicados = df_tpv[
+            (df_tpv["REFERENCIA_TPV"] == row["Venta a-Nº cliente"]) &
+            (df_tpv["IMPORTE_TPV"] == row["IMPORTE_TPV"])
+        ]
+
         if len(duplicados) > 1:
             texto += " – cobro duplicado, revisar"
 
@@ -129,7 +134,7 @@ if pdf_file and excel_file:
 
     df_res.loc[mask_ref_ok, "OBSERVACIONES"] = df_res[mask_ref_ok].apply(observaciones_total, axis=1)
 
-    # Cobro por total con referencia incorrecta
+    # Coincidencia por total con referencia errónea
     for idx, row in df_res[df_res["ESTADO COBRO"] == "NO COBRADO"].iterrows():
         total_cliente = row["TOTAL_CLIENTE"]
         candidatos = df_tpv[abs(df_tpv["IMPORTE_TPV"] - total_cliente) < 0.01]
@@ -147,13 +152,19 @@ if pdf_file and excel_file:
             if len(candidatos) > 1:
                 df_res.at[idx, "OBSERVACIONES"] += " – cobro duplicado, revisar"
 
-    # Formato final
+    # Formato visual
     df_vista = df_res.copy()
     for c in ["IMPORTE_ALBARAN", "IMPORTE_TPV", "TOTAL_CLIENTE"]:
         df_vista[c] = df_vista[c].apply(lambda x: "" if pd.isna(x) else formato_euro(x))
 
     st.subheader("Resultado conciliación")
     st.dataframe(df_vista, use_container_width=True)
+
+    # ===============================
+    # DESCARGA
+    # ===============================
+    st.markdown("### Nombre del archivo de descarga")
+    nombre_excel = st.text_input("Escribe el nombre del Excel (sin .xlsx)", "conciliacion_tpv")
 
     buffer = BytesIO()
     df_vista.to_excel(buffer, index=False, engine="openpyxl")
