@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import pdfplumber
-import re
 from io import BytesIO
 
 st.set_page_config(page_title="Comprobación COBROS TPV", layout="wide")
@@ -9,11 +8,7 @@ st.title("Comprobación COBROS TPV")
 
 st.markdown("""
 Sube el PDF de movimientos del TPV.  
-La aplicación:
-- Extrae todas las operaciones
-- Detecta Fecha/Hora, Terminal, Referencia, Importe y Resultado
-- Muestra una vista previa en tabla
-- Permite descargar el PDF convertido a Excel
+Se mostrará una vista previa y podrás descargarlo convertido a Excel.
 """)
 
 pdf_file = st.file_uploader("Sube el PDF de cobros TPV", type=["pdf"])
@@ -25,31 +20,33 @@ def leer_pdf_tpv_completo(pdf):
     with pdfplumber.open(pdf) as pdf_doc:
         texto = "\n".join(page.extract_text() or "" for page in pdf_doc.pages)
 
-    # Separar por operaciones (cada una empieza por VENTA /)
-    bloques = re.split(r"\n(?=VENTA\s/)", texto)
+    lineas = [l.strip() for l in texto.split("\n") if l.strip()]
 
-    for bloque in bloques:
-        # Fecha
-        fecha = re.search(r"(\d{4}-\d{2}-\d{2})", bloque)
-        # Hora
-        hora = re.search(r"(\d{2}:\d{2}:\d{2})", bloque)
-        # Importe
-        importe = re.search(r"(\d+\.\d{2})", bloque)
-        # Resultado
-        resultado = re.search(r"(AUTORIZADA|DENEGADA)", bloque)
-        # Referencia (5 dígitos)
-        referencia = re.search(r"\n(\d{5})\n", bloque)
-        # Terminal (número debajo del comercio)
-        terminal = re.search(r"/\s*\n(\d+)\n", bloque)
+    i = 0
+    while i < len(lineas):
+        if lineas[i].startswith("VENTA"):
+            try:
+                comercio = lineas[i+1].replace("/", "").strip()
+                terminal = lineas[i+2].strip()
+                importe = float(lineas[i+3])
+                fecha = lineas[i+4]
+                hora = lineas[i+5].split(".")[0]
+                resultado = lineas[i+7]
+                referencia = lineas[i+8] if lineas[i+8].isdigit() and len(lineas[i+8]) == 5 else ""
 
-        if fecha and hora and importe and resultado:
-            registros.append({
-                "FECHA_HORA_TPV": f"{fecha.group(1)} {hora.group(1)}" if hora else fecha.group(1),
-                "TERMINAL_TPV": terminal.group(1) if terminal else "",
-                "REFERENCIA_TPV": referencia.group(1) if referencia else "",
-                "IMPORTE_TPV": float(importe.group(1)),
-                "RESULTADO": resultado.group(1)
-            })
+                registros.append({
+                    "FECHA_HORA_TPV": f"{fecha} {hora}",
+                    "TERMINAL_TPV": terminal,
+                    "REFERENCIA_TPV": referencia,
+                    "IMPORTE_TPV": importe,
+                    "RESULTADO": resultado
+                })
+
+                i += 10
+            except:
+                i += 1
+        else:
+            i += 1
 
     return pd.DataFrame(registros)
 
@@ -65,7 +62,6 @@ if pdf_file:
         st.subheader("Vista previa del PDF convertido a tabla")
         st.dataframe(df_pdf, use_container_width=True)
 
-        # Exportar a Excel
         buffer = BytesIO()
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
             df_pdf.to_excel(writer, index=False, sheet_name="TPV")
