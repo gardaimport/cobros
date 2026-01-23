@@ -58,9 +58,10 @@ def leer_pdf_tpv(pdf):
 
     return pd.DataFrame(registros)
 
+# >>>>>> AQUI ESTA LA CORRECCIÓN CLAVE
 def limpiar_importe_excel(v):
     try:
-        return float(str(v).replace(".", "").replace(",", "."))
+        return float(str(v).replace(",", "."))
     except:
         return None
 
@@ -116,11 +117,8 @@ if pdf_file and excel_file:
     df_res["ESTADO COBRO"] = "NO COBRADO"
     df_res["OBSERVACIONES"] = ""
 
-    # Coincidencia referencia
     mask_ref = df_res["IMPORTE_TPV"].notna()
     df_res.loc[mask_ref, "ESTADO COBRO"] = "COBRADO"
-
-    # Diferencia con total cliente
     df_res.loc[mask_ref, "DIF_TOTAL"] = df_res["IMPORTE_TPV"] - df_res["TOTAL_CLIENTE"]
 
     for idx, row in df_res[mask_ref].iterrows():
@@ -133,7 +131,6 @@ if pdf_file and excel_file:
         else:
             df_res.at[idx, "OBSERVACIONES"] = f"Cobrado de menos {formato_coma(row['IMPORTE_TPV'])} – posible abono pendiente"
 
-    # Buscar cobros por total con referencia incorrecta
     for idx, row in df_res[df_res["ESTADO COBRO"] == "NO COBRADO"].iterrows():
         total = row["TOTAL_CLIENTE"]
         candidato = df_tpv[abs(df_tpv["IMPORTE_TPV"] - total) < 0.01]
@@ -148,12 +145,10 @@ if pdf_file and excel_file:
                 f"(total de {int(row['NUM_ALBARANES'])} albaranes) – posible error de referencia (TPV: {tpv['REFERENCIA_TPV']})"
             )
 
-    # Aviso duplicados
     for _, d in duplicados.iterrows():
         mask = (df_res["REFERENCIA_TPV"] == d["REFERENCIA_TPV"]) & (df_res["IMPORTE_TPV"] == d["IMPORTE_TPV"])
         df_res.loc[mask, "OBSERVACIONES"] += " | POSIBLE COBRO DUPLICADO"
 
-    # Formato final
     df_vista = df_res.copy()
     df_vista["IMPORTE_ALBARAN"] = df_vista["IMPORTE_ALBARAN"].apply(formato_coma)
     df_vista["IMPORTE_TPV"] = df_vista["IMPORTE_TPV"].apply(formato_coma)
