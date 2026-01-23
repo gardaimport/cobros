@@ -28,17 +28,14 @@ def leer_pdf_tpv(pdf):
 
             lineas = [l.strip() for l in texto.split("\n") if l.strip()]
             i = 0
-
             while i < len(lineas):
                 linea = lineas[i]
-
                 # Detectar importe
                 m_imp = patron_importe.search(linea)
                 if m_imp:
                     importe = float(m_imp.group())
                     ref = None
                     resultado = None
-
                     # Buscar referencia y resultado en las siguientes líneas
                     for j in range(i, min(i + 10, len(lineas))):
                         if not ref:
@@ -49,16 +46,13 @@ def leer_pdf_tpv(pdf):
                             m_res = patron_resultado.search(lineas[j])
                             if m_res:
                                 resultado = m_res.group()
-
-                    if ref and resultado == "AUTORIZADA":  # solo cobradas
+                    if ref and resultado == "AUTORIZADA":
                         registros.append({
                             "REFERENCIA_TPV": ref,
                             "IMPORTE_TPV": importe,
                             "RESULTADO_TPV": resultado
                         })
-
                 i += 1
-
     return pd.DataFrame(registros)
 
 
@@ -93,20 +87,13 @@ if pdf_file and excel_file:
     tot_cliente = df_alb.groupby("Venta a-Nº cliente")["IMPORTE_ALBARAN"].agg(["sum", "count"]).reset_index()
     tot_cliente.columns = ["CLIENTE", "TOTAL_CLIENTE", "NUM_ALBARANES"]
 
-    # TPV por referencia
-    tpv_ref = df_tpv.groupby("REFERENCIA_TPV", as_index=False).agg({
-        "IMPORTE_TPV": "sum"
-    })
-
-    # Cruce
+    # Cruce básico por referencia
     df_res = df_alb.merge(
-        tpv_ref,
+        df_tpv.groupby("REFERENCIA_TPV", as_index=False)["IMPORTE_TPV"].sum(),
         how="left",
         left_on="Venta a-Nº cliente",
         right_on="REFERENCIA_TPV"
-    )
-
-    df_res = df_res.merge(
+    ).merge(
         tot_cliente,
         how="left",
         left_on="Venta a-Nº cliente",
@@ -116,25 +103,27 @@ if pdf_file and excel_file:
     df_res["ESTADO COBRO"] = "NO COBRADO"
     df_res["OBSERVACIONES"] = ""
 
-    # Coincidencia exacta
-    mask_ind_ok = df_res["IMPORTE_TPV"].notna() & (abs(df_res["IMPORTE_ALBARAN"] - df_res["IMPORTE_TPV"]) < 0.01)
-    df_res.loc[mask_ind_ok, "ESTADO COBRO"] = "COBRADO"
-    df_res.loc[mask_ind_ok, "OBSERVACIONES"] = "Cobro individual correcto"
-
-    # Cobro de la referencia correcta pero importe distinto
-    mask_ref_ok = df_res["IMPORTE_TPV"].notna() & (~mask_ind_ok)
+    # Cobro exacto por referencia
+    mask_ref_ok = df_res["IMPORTE_TPV"].notna()
     df_res.loc[mask_ref_ok, "ESTADO COBRO"] = "COBRADO"
 
-    def observaciones_diferencia(row):
-        diferencia = row["IMPORTE_TPV"] - row["IMPORTE_ALBARAN"]
-        if diferencia > 0.01:
-            return f"Cobrado {row['IMPORTE_TPV']:.2f} – posible cobro albaranes atrasados"
-        elif diferencia < -0.01:
-            return f"Cobrado {row['IMPORTE_TPV']:.2f} – posible abono pendiente"
-        else:
-            return f"Cobrado {row['IMPORTE_TPV']:.2f}"
+    # Calculamos diferencia con total cliente
+    def observaciones_total(row):
+        diff = row["IMPORTE_TPV"] - row["TOTAL_CLIENTE"]
+        texto = f"Cobrado {row['IMPORTE_TPV']:.2f} (total de {int(row['NUM_ALBARANES'])} albaranes)"
+        if abs(diff) > 0.01:
+            if diff > 0:
+                texto += " – posible cobro albaranes atrasados"
+            else:
+                texto += " – posible abono pendiente"
+        # Revisar duplicados exactos
+        duplicados = df_tpv[(df_tpv["REFERENCIA_TPV"] == row["Venta a-Nº cliente"]) &
+                            (df_tpv["IMPORTE_TPV"] == row["IMPORTE_TPV"])]
+        if len(duplicados) > 1:
+            texto += " – cobro duplicado, revisar"
+        return texto
 
-    df_res.loc[mask_ref_ok, "OBSERVACIONES"] = df_res[mask_ref_ok].apply(observaciones_diferencia, axis=1)
+    df_res.loc[mask_ref_ok, "OBSERVACIONES"] = df_res[mask_ref_ok].apply(observaciones_total, axis=1)
 
     # Formato final
     df_vista = df_res.copy()
