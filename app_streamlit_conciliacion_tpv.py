@@ -63,6 +63,9 @@ def limpiar_importe_excel(v):
     except:
         return None
 
+def formato_euro(x):
+    return f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
 # ==========================================================
 # VISTA PREVIA PDF
 # ==========================================================
@@ -70,7 +73,7 @@ if pdf_file:
     st.subheader("Vista previa cobros TPV")
     df_pdf = leer_pdf_tpv(pdf_file)
     df_preview = df_pdf.copy()
-    df_preview["IMPORTE_TPV"] = df_preview["IMPORTE_TPV"].apply(lambda x: f"{x:.2f}".replace(".", ","))
+    df_preview["IMPORTE_TPV"] = df_preview["IMPORTE_TPV"].apply(lambda x: formato_euro(x))
     st.dataframe(df_preview, use_container_width=True)
 
 # ==========================================================
@@ -103,29 +106,30 @@ if pdf_file and excel_file:
 
     df_res["ESTADO COBRO"] = "NO COBRADO"
     df_res["OBSERVACIONES"] = ""
-    df_res["ERROR_REF"] = False  # Marcador para referencia en rojo
 
-    # 1️⃣ Cobro exacto por referencia
+    # Cobro con referencia correcta
     mask_ref_ok = df_res["IMPORTE_TPV"].notna()
     df_res.loc[mask_ref_ok, "ESTADO COBRO"] = "COBRADO"
 
     def observaciones_total(row):
         diff = row["IMPORTE_TPV"] - row["TOTAL_CLIENTE"]
-        texto = f"Cobrado {row['IMPORTE_TPV']:.2f} (total de {int(row['NUM_ALBARANES'])} albaranes)"
+        texto = f"Cobrado {formato_euro(row['IMPORTE_TPV'])} (total de {int(row['NUM_ALBARANES'])} albaranes)"
         if abs(diff) > 0.01:
             if diff > 0:
                 texto += " – posible cobro albaranes atrasados"
             else:
                 texto += " – posible abono pendiente"
+
         duplicados = df_tpv[(df_tpv["REFERENCIA_TPV"] == row["Venta a-Nº cliente"]) &
                             (df_tpv["IMPORTE_TPV"] == row["IMPORTE_TPV"])]
         if len(duplicados) > 1:
             texto += " – cobro duplicado, revisar"
+
         return texto
 
     df_res.loc[mask_ref_ok, "OBSERVACIONES"] = df_res[mask_ref_ok].apply(observaciones_total, axis=1)
 
-    # 2️⃣ Cobro por importe total del cliente pero referencia distinta
+    # Cobro por total con referencia incorrecta
     for idx, row in df_res[df_res["ESTADO COBRO"] == "NO COBRADO"].iterrows():
         total_cliente = row["TOTAL_CLIENTE"]
         candidatos = df_tpv[abs(df_tpv["IMPORTE_TPV"] - total_cliente) < 0.01]
@@ -135,31 +139,23 @@ if pdf_file and excel_file:
             df_res.at[idx, "ESTADO COBRO"] = "COBRADO"
             df_res.at[idx, "IMPORTE_TPV"] = tpv["IMPORTE_TPV"]
             df_res.at[idx, "REFERENCIA_TPV"] = tpv["REFERENCIA_TPV"]
-            df_res.at[idx, "OBSERVACIONES"] = f"Cobrado {tpv['IMPORTE_TPV']:.2f} – posible error de referencia (TPV: {tpv['REFERENCIA_TPV']})"
-            df_res.at[idx, "ERROR_REF"] = True
+            df_res.at[idx, "OBSERVACIONES"] = (
+                f"Cobrado {formato_euro(tpv['IMPORTE_TPV'])} – posible error de referencia "
+                f"(TPV: {tpv['REFERENCIA_TPV']})"
+            )
+
             if len(candidatos) > 1:
                 df_res.at[idx, "OBSERVACIONES"] += " – cobro duplicado, revisar"
 
     # Formato final
     df_vista = df_res.copy()
     for c in ["IMPORTE_ALBARAN", "IMPORTE_TPV", "TOTAL_CLIENTE"]:
-        df_vista[c] = df_vista[c].apply(lambda x: "" if pd.isna(x) else f"{x:.2f}".replace(".", ","))
-
-    # Aplicar estilo rojo a referencias con posible error
-    def color_referencia(val, error_flag):
-        if error_flag:
-            return f"color: red; font-weight: bold"
-        return ""
+        df_vista[c] = df_vista[c].apply(lambda x: "" if pd.isna(x) else formato_euro(x))
 
     st.subheader("Resultado conciliación")
-
-    st.dataframe(
-        df_vista.style.apply(lambda x: [color_referencia(v, e) for v, e in zip(x["REFERENCIA_TPV"], x["ERROR_REF"])], axis=1),
-        use_container_width=True
-    )
+    st.dataframe(df_vista, use_container_width=True)
 
     buffer = BytesIO()
-    df_vista.drop(columns=["ERROR_REF"], inplace=True)  # quitar columna de estilo para Excel
     df_vista.to_excel(buffer, index=False, engine="openpyxl")
     buffer.seek(0)
 
