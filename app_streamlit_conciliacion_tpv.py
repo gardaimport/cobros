@@ -58,7 +58,6 @@ def leer_pdf_tpv(pdf):
 
     return pd.DataFrame(registros)
 
-# >>>>>> AQUI ESTA LA CORRECCIÓN CLAVE
 def limpiar_importe_excel(v):
     try:
         return float(str(v).replace(",", "."))
@@ -101,7 +100,7 @@ if pdf_file and excel_file:
     duplicados = df_tpv.groupby(["REFERENCIA_TPV", "IMPORTE_TPV"]).size().reset_index(name="VECES")
     duplicados = duplicados[duplicados["VECES"] > 1]
 
-    # Cruce
+    # Cruce principal
     df_res = df_alb.merge(
         tpv_ref,
         how="left",
@@ -131,6 +130,7 @@ if pdf_file and excel_file:
         else:
             df_res.at[idx, "OBSERVACIONES"] = f"Cobrado de menos {formato_coma(row['IMPORTE_TPV'])} – posible abono pendiente"
 
+    # Coincidencia por total con referencia errónea
     for idx, row in df_res[df_res["ESTADO COBRO"] == "NO COBRADO"].iterrows():
         total = row["TOTAL_CLIENTE"]
         candidato = df_tpv[abs(df_tpv["IMPORTE_TPV"] - total) < 0.01]
@@ -145,10 +145,12 @@ if pdf_file and excel_file:
                 f"(total de {int(row['NUM_ALBARANES'])} albaranes) – posible error de referencia (TPV: {tpv['REFERENCIA_TPV']})"
             )
 
+    # Aviso duplicados
     for _, d in duplicados.iterrows():
         mask = (df_res["REFERENCIA_TPV"] == d["REFERENCIA_TPV"]) & (df_res["IMPORTE_TPV"] == d["IMPORTE_TPV"])
         df_res.loc[mask, "OBSERVACIONES"] += " | POSIBLE COBRO DUPLICADO"
 
+    # Formato hoja 1
     df_vista = df_res.copy()
     df_vista["IMPORTE_ALBARAN"] = df_vista["IMPORTE_ALBARAN"].apply(formato_coma)
     df_vista["IMPORTE_TPV"] = df_vista["IMPORTE_TPV"].apply(formato_coma)
@@ -157,12 +159,32 @@ if pdf_file and excel_file:
     st.subheader("Resultado conciliación")
     st.dataframe(df_vista, use_container_width=True)
 
-    buffer = BytesIO()
-    df_vista.to_excel(buffer, index=False, engine="openpyxl")
-    buffer.seek(0)
+    # ==========================================================
+    # HOJA 2: COBROS SIN ALBARÁN
+    # ==========================================================
+    refs_excel = set(df_alb["Venta a-Nº cliente"].astype(str))
+    totales_excel = set(tot_cliente["TOTAL_CLIENTE"].round(2))
 
+    df_sin = df_tpv.copy()
+    df_sin = df_sin[
+        (~df_sin["REFERENCIA_TPV"].isin(refs_excel)) &
+        (~df_sin["IMPORTE_TPV"].round(2).isin(totales_excel))
+    ]
+
+    df_sin["IMPORTE_TPV"] = df_sin["IMPORTE_TPV"].apply(formato_coma)
+
+    # ==========================================================
+    # DESCARGA EXCEL CON DOS HOJAS
+    # ==========================================================
+    buffer = BytesIO()
     st.markdown("### Nombre del archivo de descarga")
     nombre_excel = st.text_input("Escribe el nombre del Excel (sin .xlsx)", "conciliacion_tpv")
+
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df_vista.to_excel(writer, index=False, sheet_name="Conciliación albaranes")
+        df_sin.to_excel(writer, index=False, sheet_name="Cobros sin albarán")
+
+    buffer.seek(0)
 
     st.download_button(
         f"Descargar conciliación en Excel ({nombre_excel}.xlsx)",
