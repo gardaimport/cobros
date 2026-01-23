@@ -20,6 +20,7 @@ def leer_pdf_tpv(pdf):
     patron_importe = re.compile(r"\b\d+\.\d{2}\b")
     patron_ref = re.compile(r"\b\d{5}\b")
     patron_resultado = re.compile(r"\b(AUTORIZADA|DENEGADA)\b")
+    patron_comercio = re.compile(r"\d+/\s*$")  # línea tipo 354015505/
 
     with pdfplumber.open(pdf) as pdf_doc:
         for page in pdf_doc.pages:
@@ -33,8 +34,8 @@ def leer_pdf_tpv(pdf):
             while i < len(lineas):
                 linea = lineas[i]
 
-                # Detectar bloque de comercio/terminal (línea que acaba en "/")
-                if linea.endswith("/") and i + 1 < len(lineas):
+                # Detectar línea de comercio (acabada en "/") y leer terminal debajo
+                if patron_comercio.search(linea) and i + 1 < len(lineas):
                     posible_terminal = lineas[i + 1].strip()
                     if posible_terminal.isdigit():
                         terminal_actual = posible_terminal
@@ -47,7 +48,7 @@ def leer_pdf_tpv(pdf):
                     resultado = None
 
                     # Buscar referencia y resultado en las siguientes líneas
-                    for j in range(i, min(i + 8, len(lineas))):
+                    for j in range(i, min(i + 10, len(lineas))):
                         if not ref:
                             m_ref = patron_ref.search(lineas[j])
                             if m_ref:
