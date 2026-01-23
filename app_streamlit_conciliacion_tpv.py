@@ -100,7 +100,7 @@ if pdf_file and excel_file:
     duplicados = df_tpv.groupby(["REFERENCIA_TPV", "IMPORTE_TPV"]).size().reset_index(name="VECES")
     duplicados = duplicados[duplicados["VECES"] > 1]
 
-    # Cruce principal
+    # Cruce
     df_res = df_alb.merge(
         tpv_ref,
         how="left",
@@ -162,26 +162,12 @@ if pdf_file and excel_file:
     st.subheader("Resultado conciliación")
     st.dataframe(df_vista, use_container_width=True)
 
-    # ==========================================================
-    # COBROS SIN COINCIDENCIA
-    # ==========================================================
-    # Referencias y totales que no matchean
-    cobros_no_match = df_tpv[
-        ~df_tpv["REFERENCIA_TPV"].isin(df_res["Venta a-Nº cliente"]) &
-        ~df_tpv["IMPORTE_TPV"].isin(df_res["TOTAL_CLIENTE"].fillna(0))
-    ].copy()
-    cobros_no_match["IMPORTE_TPV"] = cobros_no_match["IMPORTE_TPV"].apply(formato_coma)
-
-    # ==========================================================
-    # DESCARGA EXCEL CON DOS HOJAS
-    # ==========================================================
     buffer = BytesIO()
-    nombre_excel = st.text_input("Escribe el nombre del Excel (sin .xlsx)", "conciliacion_tpv")
-
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df_vista.to_excel(writer, index=False, sheet_name="Conciliación albaranes")
-        cobros_no_match.to_excel(writer, index=False, sheet_name="Cobros sin coincidencia")
+    df_vista.to_excel(buffer, index=False, engine="openpyxl")
     buffer.seek(0)
+
+    st.markdown("### Nombre del archivo de descarga")
+    nombre_excel = st.text_input("Escribe el nombre del Excel (sin .xlsx)", "conciliacion_tpv")
 
     st.download_button(
         f"Descargar conciliación en Excel ({nombre_excel}.xlsx)",
