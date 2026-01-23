@@ -87,7 +87,7 @@ if pdf_file and excel_file:
     tot_cliente = df_alb.groupby("Venta a-Nº cliente")["IMPORTE_ALBARAN"].agg(["sum", "count"]).reset_index()
     tot_cliente.columns = ["CLIENTE", "TOTAL_CLIENTE", "NUM_ALBARANES"]
 
-    # Cruce básico por referencia
+    # Cruce por referencia
     df_res = df_alb.merge(
         df_tpv.groupby("REFERENCIA_TPV", as_index=False)["IMPORTE_TPV"].sum(),
         how="left",
@@ -103,14 +103,14 @@ if pdf_file and excel_file:
     df_res["ESTADO COBRO"] = "NO COBRADO"
     df_res["OBSERVACIONES"] = ""
 
-    # Cobro exacto por referencia
+    # 1️⃣ Cobro exacto por referencia
     mask_ref_ok = df_res["IMPORTE_TPV"].notna()
     df_res.loc[mask_ref_ok, "ESTADO COBRO"] = "COBRADO"
 
-    # Calculamos diferencia con total cliente
     def observaciones_total(row):
         diff = row["IMPORTE_TPV"] - row["TOTAL_CLIENTE"]
         texto = f"Cobrado {row['IMPORTE_TPV']:.2f} (total de {int(row['NUM_ALBARANES'])} albaranes)"
+        # Diferencias sobre total
         if abs(diff) > 0.01:
             if diff > 0:
                 texto += " – posible cobro albaranes atrasados"
@@ -124,6 +124,20 @@ if pdf_file and excel_file:
         return texto
 
     df_res.loc[mask_ref_ok, "OBSERVACIONES"] = df_res[mask_ref_ok].apply(observaciones_total, axis=1)
+
+    # 2️⃣ Cobro por importe total del cliente pero referencia distinta
+    for idx, row in df_res[df_res["ESTADO COBRO"] == "NO COBRADO"].iterrows():
+        total_cliente = row["TOTAL_CLIENTE"]
+        candidatos = df_tpv[abs(df_tpv["IMPORTE_TPV"] - total_cliente) < 0.01]
+
+        if not candidatos.empty:
+            tpv = candidatos.iloc[0]  # tomamos el primero
+            df_res.at[idx, "ESTADO COBRO"] = "COBRADO"
+            df_res.at[idx, "IMPORTE_TPV"] = tpv["IMPORTE_TPV"]
+            df_res.at[idx, "OBSERVACIONES"] = f"Cobrado {tpv['IMPORTE_TPV']:.2f} – posible error de referencia (TPV: {tpv['REFERENCIA_TPV']})"
+            # Revisar duplicados
+            if len(candidatos) > 1:
+                df_res.at[idx, "OBSERVACIONES"] += " – cobro duplicado, revisar"
 
     # Formato final
     df_vista = df_res.copy()
