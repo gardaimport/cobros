@@ -4,8 +4,8 @@ import pdfplumber
 import re
 from io import BytesIO
 
-st.set_page_config(page_title="Conciliación TPV", layout="wide")
-st.title("Conciliación de cobros TPV vs Albaranes")
+st.set_page_config(page_title="Comprobación COBROS TPV", layout="wide")
+st.title("Comprobación COBROS TPV")
 
 pdf_file = st.file_uploader("Sube el PDF de cobros TPV", type=["pdf"])
 excel_file = st.file_uploader("Sube el Excel de albaranes", type=["xlsx", "xls"])
@@ -15,12 +15,10 @@ excel_file = st.file_uploader("Sube el Excel de albaranes", type=["xlsx", "xls"]
 # ==========================================================
 def leer_pdf_tpv(pdf):
     registros = []
-    terminal_actual = ""
 
     patron_importe = re.compile(r"\b\d+\.\d{2}\b")
     patron_ref = re.compile(r"\b\d{5}\b")
     patron_resultado = re.compile(r"\b(AUTORIZADA|DENEGADA)\b")
-    patron_comercio = re.compile(r"/")  # línea que contiene "/"
 
     with pdfplumber.open(pdf) as pdf_doc:
         for page in pdf_doc.pages:
@@ -33,10 +31,6 @@ def leer_pdf_tpv(pdf):
 
             while i < len(lineas):
                 linea = lineas[i]
-
-                # Detectar línea de comercio (contiene "/") y tomar la línea siguiente como terminal
-                if patron_comercio.search(linea) and i + 1 < len(lineas):
-                    terminal_actual = lineas[i + 1].strip()  # Copiamos toda la línea
 
                 # Detectar importe
                 m_imp = patron_importe.search(linea)
@@ -56,17 +50,17 @@ def leer_pdf_tpv(pdf):
                             if m_res:
                                 resultado = m_res.group()
 
-                    if ref:
+                    if ref and resultado == "AUTORIZADA":  # solo cobradas
                         registros.append({
                             "REFERENCIA_TPV": ref,
                             "IMPORTE_TPV": importe,
-                            "TERMINAL_TPV": terminal_actual,
                             "RESULTADO_TPV": resultado
                         })
 
                 i += 1
 
     return pd.DataFrame(registros)
+
 
 def limpiar_importe_excel(v):
     try:
@@ -101,8 +95,7 @@ if pdf_file and excel_file:
 
     # TPV por referencia
     tpv_ref = df_tpv.groupby("REFERENCIA_TPV", as_index=False).agg({
-        "IMPORTE_TPV": "sum",
-        "TERMINAL_TPV": "first"
+        "IMPORTE_TPV": "sum"
     })
 
     # Cruce
@@ -123,50 +116,25 @@ if pdf_file and excel_file:
     df_res["ESTADO COBRO"] = "NO COBRADO"
     df_res["OBSERVACIONES"] = ""
 
-    # Coincidencia individual correcta
+    # Coincidencia exacta
     mask_ind_ok = df_res["IMPORTE_TPV"].notna() & (abs(df_res["IMPORTE_ALBARAN"] - df_res["IMPORTE_TPV"]) < 0.01)
     df_res.loc[mask_ind_ok, "ESTADO COBRO"] = "COBRADO"
     df_res.loc[mask_ind_ok, "OBSERVACIONES"] = "Cobro individual correcto"
 
-    # Coincidencia por total cliente con referencia correcta
-    mask_total_ok = (
-        df_res["IMPORTE_TPV"].notna() &
-        (~mask_ind_ok) &
-        (abs(df_res["TOTAL_CLIENTE"] - df_res["IMPORTE_TPV"]) < 0.01)
-    )
+    # Cobro de la referencia correcta pero importe distinto
+    mask_ref_ok = df_res["IMPORTE_TPV"].notna() & (~mask_ind_ok)
+    df_res.loc[mask_ref_ok, "ESTADO COBRO"] = "COBRADO"
 
-    df_res.loc[mask_total_ok, "ESTADO COBRO"] = "COBRADO"
-    df_res.loc[mask_total_ok, "OBSERVACIONES"] = df_res[mask_total_ok].apply(
-        lambda r: f"Cobrado {r['IMPORTE_TPV']:.2f} (total de {int(r['NUM_ALBARANES'])} albaranes)",
-        axis=1
-    )
-
-    # Buscar coincidencias por importe con referencia incorrecta
-    for idx, row in df_res[df_res["ESTADO COBRO"] == "NO COBRADO"].iterrows():
-        total = row["TOTAL_CLIENTE"]
-        importe_ind = row["IMPORTE_ALBARAN"]
-        cliente = row["Venta a-Nº cliente"]
-
-        candidatos = df_tpv[
-            (abs(df_tpv["IMPORTE_TPV"] - importe_ind) < 0.01) |
-            (abs(df_tpv["IMPORTE_TPV"] - total) < 0.01)
-        ]
-
-        if len(candidatos) == 1:
-            tpv = candidatos.iloc[0]
-            df_res.at[idx, "IMPORTE_TPV"] = tpv["IMPORTE_TPV"]
-            df_res.at[idx, "TERMINAL_TPV"] = tpv["TERMINAL_TPV"]
-            df_res.at[idx, "ESTADO COBRO"] = "COBRADO"
-
-            if abs(tpv["IMPORTE_TPV"] - importe_ind) < 0.01:
-                df_res.at[idx, "OBSERVACIONES"] = f"Cobrado {tpv['IMPORTE_TPV']:.2f} – posible error de referencia (TPV: {tpv['REFERENCIA_TPV']})"
-            else:
-                df_res.at[idx, "OBSERVACIONES"] = f"Cobrado {tpv['IMPORTE_TPV']:.2f} (total de {int(row['NUM_ALBARANES'])} albaranes) – posible error de referencia (TPV: {tpv['REFERENCIA_TPV']})"
-
-        elif len(candidatos) > 1:
-            df_res.at[idx, "OBSERVACIONES"] = "Hay varios cobros TPV con este importe, revisar manualmente"
+    def observaciones_diferencia(row):
+        diferencia = row["IMPORTE_TPV"] - row["IMPORTE_ALBARAN"]
+        if diferencia > 0.01:
+            return f"Cobrado {row['IMPORTE_TPV']:.2f} – posible cobro albaranes atrasados"
+        elif diferencia < -0.01:
+            return f"Cobrado {row['IMPORTE_TPV']:.2f} – posible abono pendiente"
         else:
-            df_res.at[idx, "OBSERVACIONES"] = "Sin cobro TPV"
+            return f"Cobrado {row['IMPORTE_TPV']:.2f}"
+
+    df_res.loc[mask_ref_ok, "OBSERVACIONES"] = df_res[mask_ref_ok].apply(observaciones_diferencia, axis=1)
 
     # Formato final
     df_vista = df_res.copy()
