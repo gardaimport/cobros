@@ -17,8 +17,9 @@ def leer_pdf_tpv(pdf):
     registros = []
     terminal_actual = ""
 
-    patron_importe = re.compile(r"\d+\.\d{2}")
+    patron_importe = re.compile(r"\b\d+\.\d{2}\b")
     patron_ref = re.compile(r"\b\d{5}\b")
+    patron_resultado = re.compile(r"\b(AUTORIZADA|DENEGADA)\b")
 
     with pdfplumber.open(pdf) as pdf_doc:
         for page in pdf_doc.pages:
@@ -32,32 +33,37 @@ def leer_pdf_tpv(pdf):
             while i < len(lineas):
                 linea = lineas[i]
 
-                # Terminal
-                if "/" in linea and sum(c.isdigit() for c in linea) >= 9:
-                    nums = re.findall(r"\d+", linea)
-                    if len(nums) >= 1:
-                        if len(nums) >= 2:
-                            terminal_actual = nums[1]
-                        elif i + 1 < len(lineas) and lineas[i + 1].isdigit():
-                            terminal_actual = lineas[i + 1]
+                # Detectar bloque de comercio/terminal (línea que acaba en "/")
+                if linea.endswith("/") and i + 1 < len(lineas):
+                    posible_terminal = lineas[i + 1].strip()
+                    if posible_terminal.isdigit():
+                        terminal_actual = posible_terminal
 
-                # Importe
+                # Detectar importe
                 m_imp = patron_importe.search(linea)
                 if m_imp:
                     importe = float(m_imp.group())
                     ref = None
+                    resultado = None
 
-                    for j in range(i, min(i + 6, len(lineas))):
-                        m_ref = patron_ref.search(lineas[j])
-                        if m_ref:
-                            ref = m_ref.group()
-                            break
+                    # Buscar referencia y resultado en las siguientes líneas
+                    for j in range(i, min(i + 8, len(lineas))):
+                        if not ref:
+                            m_ref = patron_ref.search(lineas[j])
+                            if m_ref:
+                                ref = m_ref.group()
+
+                        if not resultado:
+                            m_res = patron_resultado.search(lineas[j])
+                            if m_res:
+                                resultado = m_res.group()
 
                     if ref:
                         registros.append({
                             "REFERENCIA_TPV": ref,
                             "IMPORTE_TPV": importe,
-                            "TERMINAL_TPV": terminal_actual
+                            "TERMINAL_TPV": terminal_actual,
+                            "RESULTADO_TPV": resultado
                         })
 
                 i += 1
