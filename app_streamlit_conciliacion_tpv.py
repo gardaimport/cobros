@@ -10,6 +10,9 @@ st.title("Comprobación COBROS TPV")
 pdf_file = st.file_uploader("Sube el PDF de cobros TPV", type=["pdf"])
 excel_file = st.file_uploader("Sube el Excel de albaranes", type=["xlsx", "xls"])
 
+# Nombre de descarga
+nombre_excel = st.text_input("Nombre del archivo Excel a descargar (sin extensión)", "conciliacion_tpv")
+
 # ==========================================================
 # LECTOR PDF
 # ==========================================================
@@ -30,13 +33,11 @@ def leer_pdf_tpv(pdf):
             i = 0
             while i < len(lineas):
                 linea = lineas[i]
-                # Detectar importe
                 m_imp = patron_importe.search(linea)
                 if m_imp:
                     importe = float(m_imp.group())
                     ref = None
                     resultado = None
-                    # Buscar referencia y resultado en las siguientes líneas
                     for j in range(i, min(i + 10, len(lineas))):
                         if not ref:
                             m_ref = patron_ref.search(lineas[j])
@@ -102,6 +103,7 @@ if pdf_file and excel_file:
 
     df_res["ESTADO COBRO"] = "NO COBRADO"
     df_res["OBSERVACIONES"] = ""
+    df_res["ERROR_REF"] = False  # Marcador para referencia en rojo
 
     # 1️⃣ Cobro exacto por referencia
     mask_ref_ok = df_res["IMPORTE_TPV"].notna()
@@ -110,13 +112,11 @@ if pdf_file and excel_file:
     def observaciones_total(row):
         diff = row["IMPORTE_TPV"] - row["TOTAL_CLIENTE"]
         texto = f"Cobrado {row['IMPORTE_TPV']:.2f} (total de {int(row['NUM_ALBARANES'])} albaranes)"
-        # Diferencias sobre total
         if abs(diff) > 0.01:
             if diff > 0:
                 texto += " – posible cobro albaranes atrasados"
             else:
                 texto += " – posible abono pendiente"
-        # Revisar duplicados exactos
         duplicados = df_tpv[(df_tpv["REFERENCIA_TPV"] == row["Venta a-Nº cliente"]) &
                             (df_tpv["IMPORTE_TPV"] == row["IMPORTE_TPV"])]
         if len(duplicados) > 1:
@@ -131,11 +131,12 @@ if pdf_file and excel_file:
         candidatos = df_tpv[abs(df_tpv["IMPORTE_TPV"] - total_cliente) < 0.01]
 
         if not candidatos.empty:
-            tpv = candidatos.iloc[0]  # tomamos el primero
+            tpv = candidatos.iloc[0]
             df_res.at[idx, "ESTADO COBRO"] = "COBRADO"
             df_res.at[idx, "IMPORTE_TPV"] = tpv["IMPORTE_TPV"]
+            df_res.at[idx, "REFERENCIA_TPV"] = tpv["REFERENCIA_TPV"]
             df_res.at[idx, "OBSERVACIONES"] = f"Cobrado {tpv['IMPORTE_TPV']:.2f} – posible error de referencia (TPV: {tpv['REFERENCIA_TPV']})"
-            # Revisar duplicados
+            df_res.at[idx, "ERROR_REF"] = True
             if len(candidatos) > 1:
                 df_res.at[idx, "OBSERVACIONES"] += " – cobro duplicado, revisar"
 
@@ -144,17 +145,28 @@ if pdf_file and excel_file:
     for c in ["IMPORTE_ALBARAN", "IMPORTE_TPV", "TOTAL_CLIENTE"]:
         df_vista[c] = df_vista[c].apply(lambda x: "" if pd.isna(x) else f"{x:.2f}".replace(".", ","))
 
+    # Aplicar estilo rojo a referencias con posible error
+    def color_referencia(val, error_flag):
+        if error_flag:
+            return f"color: red; font-weight: bold"
+        return ""
+
     st.subheader("Resultado conciliación")
-    st.dataframe(df_vista, use_container_width=True)
+
+    st.dataframe(
+        df_vista.style.apply(lambda x: [color_referencia(v, e) for v, e in zip(x["REFERENCIA_TPV"], x["ERROR_REF"])], axis=1),
+        use_container_width=True
+    )
 
     buffer = BytesIO()
+    df_vista.drop(columns=["ERROR_REF"], inplace=True)  # quitar columna de estilo para Excel
     df_vista.to_excel(buffer, index=False, engine="openpyxl")
     buffer.seek(0)
 
     st.download_button(
-        "Descargar conciliación en Excel",
+        f"Descargar conciliación en Excel ({nombre_excel}.xlsx)",
         data=buffer,
-        file_name="conciliacion_tpv.xlsx",
+        file_name=f"{nombre_excel}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
