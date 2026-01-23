@@ -15,6 +15,7 @@ excel_file = st.file_uploader("Sube el Excel de albaranes", type=["xlsx", "xls"]
 # ==========================================================
 def leer_pdf_tpv(pdf):
     registros = []
+
     patron_importe = re.compile(r"\b\d+\.\d{2}\b")
     patron_ref = re.compile(r"\b\d{5}\b")
     patron_resultado = re.compile(r"\b(AUTORIZADA|DENEGADA)\b")
@@ -27,10 +28,8 @@ def leer_pdf_tpv(pdf):
 
             lineas = [l.strip() for l in texto.split("\n") if l.strip()]
             i = 0
-
             while i < len(lineas):
                 linea = lineas[i]
-
                 m_imp = patron_importe.search(linea)
                 if m_imp:
                     importe = float(m_imp.group())
@@ -42,7 +41,6 @@ def leer_pdf_tpv(pdf):
                             m_ref = patron_ref.search(lineas[j])
                             if m_ref:
                                 ref = m_ref.group()
-
                         if not resultado:
                             m_res = patron_resultado.search(lineas[j])
                             if m_res:
@@ -51,31 +49,33 @@ def leer_pdf_tpv(pdf):
                     if ref and resultado == "AUTORIZADA":
                         registros.append({
                             "REFERENCIA_TPV": ref,
-                            "IMPORTE_TPV": importe
+                            "IMPORTE_TPV": importe,
+                            "RESULTADO_TPV": resultado
                         })
-
                 i += 1
 
     return pd.DataFrame(registros)
 
+
 def limpiar_importe_excel(v):
     try:
-        return float(str(v).replace(".", "").replace(",", "."))
+        return float(str(v).replace(",", "."))
     except:
         return None
 
-def formato_coma(x):
-    return "" if pd.isna(x) else f"{x:.2f}".replace(".", ",")
+
+def formato_euro(x):
+    return f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 # ==========================================================
 # VISTA PREVIA PDF
 # ==========================================================
 if pdf_file:
-    st.subheader("Vista previa cobros TPV (solo AUTORIZADOS)")
+    st.subheader("Vista previa cobros TPV")
     df_pdf = leer_pdf_tpv(pdf_file)
-    df_prev = df_pdf.copy()
-    df_prev["IMPORTE_TPV"] = df_prev["IMPORTE_TPV"].apply(formato_coma)
-    st.dataframe(df_prev, use_container_width=True)
+    df_preview = df_pdf.copy()
+    df_preview["IMPORTE_TPV"] = df_preview["IMPORTE_TPV"].apply(lambda x: formato_euro(x))
+    st.dataframe(df_preview, use_container_width=True)
 
 # ==========================================================
 # CONCILIACIÓN
@@ -87,22 +87,14 @@ if pdf_file and excel_file:
 
     df_alb["Venta a-Nº cliente"] = df_alb["Venta a-Nº cliente"].astype(str)
     df_alb["IMPORTE_ALBARAN"] = df_alb["Importe envío IVA incluido"].apply(limpiar_importe_excel)
-    df_alb["Fecha envío"] = pd.to_datetime(df_alb["Fecha envío"], errors="coerce").dt.strftime("%d/%m/%Y")
 
     # Totales por cliente
     tot_cliente = df_alb.groupby("Venta a-Nº cliente")["IMPORTE_ALBARAN"].agg(["sum", "count"]).reset_index()
     tot_cliente.columns = ["CLIENTE", "TOTAL_CLIENTE", "NUM_ALBARANES"]
 
-    # TPV por referencia
-    tpv_ref = df_tpv.groupby("REFERENCIA_TPV", as_index=False)["IMPORTE_TPV"].sum()
-
-    # Duplicados exactos
-    duplicados = df_tpv.groupby(["REFERENCIA_TPV", "IMPORTE_TPV"]).size().reset_index(name="VECES")
-    duplicados = duplicados[duplicados["VECES"] > 1]
-
-    # Cruce
+    # Cruce por referencia
     df_res = df_alb.merge(
-        tpv_ref,
+        df_tpv.groupby("REFERENCIA_TPV", as_index=False)["IMPORTE_TPV"].sum(),
         how="left",
         left_on="Venta a-Nº cliente",
         right_on="REFERENCIA_TPV"
@@ -116,58 +108,67 @@ if pdf_file and excel_file:
     df_res["ESTADO COBRO"] = "NO COBRADO"
     df_res["OBSERVACIONES"] = ""
 
-    # Coincidencia referencia
-    mask_ref = df_res["IMPORTE_TPV"].notna()
-    df_res.loc[mask_ref, "ESTADO COBRO"] = "COBRADO"
+    # Referencia correcta
+    mask_ref_ok = df_res["IMPORTE_TPV"].notna()
+    df_res.loc[mask_ref_ok, "ESTADO COBRO"] = "COBRADO"
 
-    # Diferencia con total cliente
-    df_res.loc[mask_ref, "DIF_TOTAL"] = df_res["IMPORTE_TPV"] - df_res["TOTAL_CLIENTE"]
+    def observaciones_total(row):
+        diff = row["IMPORTE_TPV"] - row["TOTAL_CLIENTE"]
+        texto = f"Cobrado {formato_euro(row['IMPORTE_TPV'])} (total de {int(row['NUM_ALBARANES'])} albaranes)"
 
-    for idx, row in df_res[mask_ref].iterrows():
-        dif = row["DIF_TOTAL"]
+        if abs(diff) > 0.01:
+            if diff > 0:
+                texto += " – posible cobro albaranes atrasados"
+            else:
+                texto += " – posible abono pendiente"
 
-        if abs(dif) < 0.01:
-            df_res.at[idx, "OBSERVACIONES"] = f"Cobrado {formato_coma(row['IMPORTE_TPV'])} (total de {int(row['NUM_ALBARANES'])} albaranes)"
-        elif dif > 0:
-            df_res.at[idx, "OBSERVACIONES"] = f"Cobrado de más {formato_coma(row['IMPORTE_TPV'])} – posible cobro albaranes atrasados"
-        else:
-            df_res.at[idx, "OBSERVACIONES"] = f"Cobrado de menos {formato_coma(row['IMPORTE_TPV'])} – posible abono pendiente"
+        duplicados = df_tpv[
+            (df_tpv["REFERENCIA_TPV"] == row["Venta a-Nº cliente"]) &
+            (df_tpv["IMPORTE_TPV"] == row["IMPORTE_TPV"])
+        ]
 
-    # Buscar cobros por total con referencia incorrecta
+        if len(duplicados) > 1:
+            texto += " – cobro duplicado, revisar"
+
+        return texto
+
+    df_res.loc[mask_ref_ok, "OBSERVACIONES"] = df_res[mask_ref_ok].apply(observaciones_total, axis=1)
+
+    # Coincidencia por total con referencia errónea
     for idx, row in df_res[df_res["ESTADO COBRO"] == "NO COBRADO"].iterrows():
-        total = row["TOTAL_CLIENTE"]
-        candidato = df_tpv[abs(df_tpv["IMPORTE_TPV"] - total) < 0.01]
+        total_cliente = row["TOTAL_CLIENTE"]
+        candidatos = df_tpv[abs(df_tpv["IMPORTE_TPV"] - total_cliente) < 0.01]
 
-        if len(candidato) == 1:
-            tpv = candidato.iloc[0]
+        if not candidatos.empty:
+            tpv = candidatos.iloc[0]
+            df_res.at[idx, "ESTADO COBRO"] = "COBRADO"
             df_res.at[idx, "IMPORTE_TPV"] = tpv["IMPORTE_TPV"]
             df_res.at[idx, "REFERENCIA_TPV"] = tpv["REFERENCIA_TPV"]
-            df_res.at[idx, "ESTADO COBRO"] = "COBRADO"
             df_res.at[idx, "OBSERVACIONES"] = (
-                f"Cobrado {formato_coma(tpv['IMPORTE_TPV'])} "
-                f"(total de {int(row['NUM_ALBARANES'])} albaranes) – posible error de referencia (TPV: {tpv['REFERENCIA_TPV']})"
+                f"Cobrado {formato_euro(tpv['IMPORTE_TPV'])} – posible error de referencia "
+                f"(TPV: {tpv['REFERENCIA_TPV']})"
             )
 
-    # Aviso duplicados
-    for _, d in duplicados.iterrows():
-        mask = (df_res["REFERENCIA_TPV"] == d["REFERENCIA_TPV"]) & (df_res["IMPORTE_TPV"] == d["IMPORTE_TPV"])
-        df_res.loc[mask, "OBSERVACIONES"] += " | POSIBLE COBRO DUPLICADO"
+            if len(candidatos) > 1:
+                df_res.at[idx, "OBSERVACIONES"] += " – cobro duplicado, revisar"
 
-    # Formato final
+    # Formato visual
     df_vista = df_res.copy()
-    df_vista["IMPORTE_ALBARAN"] = df_vista["IMPORTE_ALBARAN"].apply(formato_coma)
-    df_vista["IMPORTE_TPV"] = df_vista["IMPORTE_TPV"].apply(formato_coma)
-    df_vista["TOTAL_CLIENTE"] = df_vista["TOTAL_CLIENTE"].apply(formato_coma)
+    for c in ["IMPORTE_ALBARAN", "IMPORTE_TPV", "TOTAL_CLIENTE"]:
+        df_vista[c] = df_vista[c].apply(lambda x: "" if pd.isna(x) else formato_euro(x))
 
     st.subheader("Resultado conciliación")
     st.dataframe(df_vista, use_container_width=True)
 
+    # ===============================
+    # DESCARGA
+    # ===============================
+    st.markdown("### Nombre del archivo de descarga")
+    nombre_excel = st.text_input("Escribe el nombre del Excel (sin .xlsx)", "conciliacion_tpv")
+
     buffer = BytesIO()
     df_vista.to_excel(buffer, index=False, engine="openpyxl")
     buffer.seek(0)
-
-    st.markdown("### Nombre del archivo de descarga")
-    nombre_excel = st.text_input("Escribe el nombre del Excel (sin .xlsx)", "conciliacion_tpv")
 
     st.download_button(
         f"Descargar conciliación en Excel ({nombre_excel}.xlsx)",
@@ -177,4 +178,4 @@ if pdf_file and excel_file:
     )
 
 else:
-    st.info("Sube el PDF y el Excel para comenzar la comprobación.")
+    st.info("Sube el PDF y el Excel para comenzar la conciliación.")
