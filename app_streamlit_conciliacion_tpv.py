@@ -16,7 +16,7 @@ excel_file = st.file_uploader("Sube el Excel de albaranes", type=["xlsx", "xls"]
 def leer_pdf_tpv(pdf):
     registros = []
     patron_importe = re.compile(r"\b\d+\.\d{2}\b")
-    patron_ref = re.compile(r"\b\d{5,12}\b")
+    patron_ref = re.compile(r"\b\d{5}\b")
     patron_resultado = re.compile(r"\b(AUTORIZADA|DENEGADA)\b")
 
     with pdfplumber.open(pdf) as pdf_doc:
