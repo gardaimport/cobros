@@ -92,6 +92,45 @@ if pdf_file and excel_file:
     # Totales por cliente
     tot_cliente = df_alb.groupby("Venta a-Nº cliente")["IMPORTE_ALBARAN"].agg(["sum", "count"]).reset_index()
     tot_cliente.columns = ["CLIENTE", "TOTAL_CLIENTE", "NUM_ALBARANES"]
+    # ==========================================
+
+# DETECCIÓN DE DOBLES COBROS DISTINTOS MISMA REFERENCIA
+# ==========================================
+duplicados_ref = (
+    df_tpv.groupby("REFERENCIA_TPV")["IMPORTE_TPV"]
+    .nunique()
+    .reset_index()
+)
+
+refs_sospechosas = duplicados_ref[duplicados_ref["IMPORTE_TPV"] > 1]["REFERENCIA_TPV"].tolist()
+
+reubicaciones = []
+
+for r in reubicaciones:
+    mask = df_res["Venta a-Nº cliente"] == r["REFERENCIA_CORRECTA"]
+
+    df_res.loc[mask, "OBSERVACIONES"] = (
+        f"Cobrado {r['IMPORTE']:.2f}".replace(".", ",") +
+        f" (total de {int(df_res.loc[mask, 'NUM_ALBARANES'].iloc[0])} albaranes) – "
+        f"posible error de referencia (TPV: {r['REFERENCIA_ORIGEN']})"
+    )
+
+for ref in refs_sospechosas:
+    cobros_ref = df_tpv[df_tpv["REFERENCIA_TPV"] == ref]
+
+    for _, cobro in cobros_ref.iterrows():
+        importe = cobro["IMPORTE_TPV"]
+
+        posibles = tot_cliente[abs(tot_cliente["TOTAL_CLIENTE"] - importe) < 0.01]
+
+        if not posibles.empty:
+            cliente_correcto = posibles.iloc[0]["CLIENTE"]
+
+            reubicaciones.append({
+                "REFERENCIA_ORIGEN": ref,
+                "REFERENCIA_CORRECTA": cliente_correcto,
+                "IMPORTE": importe
+            })
 
     # TPV por referencia
     tpv_ref = df_tpv.groupby("REFERENCIA_TPV", as_index=False)["IMPORTE_TPV"].sum()
