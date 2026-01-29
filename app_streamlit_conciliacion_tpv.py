@@ -48,6 +48,7 @@ def leer_pdf_tpv(pdf):
                             if m_res:
                                 resultado = m_res.group()
 
+                    # Solo cobros AUTORIZADOS
                     if ref and resultado == "AUTORIZADA":
                         registros.append({
                             "REFERENCIA_TPV": ref,
@@ -92,45 +93,6 @@ if pdf_file and excel_file:
     # Totales por cliente
     tot_cliente = df_alb.groupby("Venta a-Nº cliente")["IMPORTE_ALBARAN"].agg(["sum", "count"]).reset_index()
     tot_cliente.columns = ["CLIENTE", "TOTAL_CLIENTE", "NUM_ALBARANES"]
-    # ==========================================
-
-# DETECCIÓN DE DOBLES COBROS DISTINTOS MISMA REFERENCIA
-# ==========================================
-duplicados_ref = (
-    df_tpv.groupby("REFERENCIA_TPV")["IMPORTE_TPV"]
-    .nunique()
-    .reset_index()
-)
-
-refs_sospechosas = duplicados_ref[duplicados_ref["IMPORTE_TPV"] > 1]["REFERENCIA_TPV"].tolist()
-
-reubicaciones = []
-
-for r in reubicaciones:
-    mask = df_res["Venta a-Nº cliente"] == r["REFERENCIA_CORRECTA"]
-
-    df_res.loc[mask, "OBSERVACIONES"] = (
-        f"Cobrado {r['IMPORTE']:.2f}".replace(".", ",") +
-        f" (total de {int(df_res.loc[mask, 'NUM_ALBARANES'].iloc[0])} albaranes) – "
-        f"posible error de referencia (TPV: {r['REFERENCIA_ORIGEN']})"
-    )
-
-for ref in refs_sospechosas:
-    cobros_ref = df_tpv[df_tpv["REFERENCIA_TPV"] == ref]
-
-    for _, cobro in cobros_ref.iterrows():
-        importe = cobro["IMPORTE_TPV"]
-
-        posibles = tot_cliente[abs(tot_cliente["TOTAL_CLIENTE"] - importe) < 0.01]
-
-        if not posibles.empty:
-            cliente_correcto = posibles.iloc[0]["CLIENTE"]
-
-            reubicaciones.append({
-                "REFERENCIA_ORIGEN": ref,
-                "REFERENCIA_CORRECTA": cliente_correcto,
-                "IMPORTE": importe
-            })
 
     # TPV por referencia
     tpv_ref = df_tpv.groupby("REFERENCIA_TPV", as_index=False)["IMPORTE_TPV"].sum()
@@ -155,6 +117,9 @@ for ref in refs_sospechosas:
     df_res["ESTADO COBRO"] = "NO COBRADO"
     df_res["OBSERVACIONES"] = ""
 
+    # ==========================================================
+    # COBROS INDIVIDUALES Y POR TOTAL CLIENTE
+    # ==========================================================
     mask_ref = df_res["IMPORTE_TPV"].notna()
     df_res.loc[mask_ref, "ESTADO COBRO"] = "COBRADO"
     df_res.loc[mask_ref, "DIF_TOTAL"] = df_res["IMPORTE_TPV"] - df_res["TOTAL_CLIENTE"]
@@ -169,7 +134,9 @@ for ref in refs_sospechosas:
         else:
             df_res.at[idx, "OBSERVACIONES"] = f"Cobrado de menos {formato_coma(row['IMPORTE_TPV'])} – posible abono pendiente"
 
+    # ==========================================================
     # Coincidencia por total con referencia errónea
+    # ==========================================================
     for idx, row in df_res[df_res["ESTADO COBRO"] == "NO COBRADO"].iterrows():
         total = row["TOTAL_CLIENTE"]
         candidato = df_tpv[abs(df_tpv["IMPORTE_TPV"] - total) < 0.01]
@@ -184,12 +151,26 @@ for ref in refs_sospechosas:
                 f"(total de {int(row['NUM_ALBARANES'])} albaranes) – posible error de referencia (TPV: {tpv['REFERENCIA_TPV']})"
             )
 
-    # Aviso duplicados
+    # ==========================================================
+    # Aviso cobros duplicados con distinto importe
+    # ==========================================================
+    refs_multiples = df_tpv.groupby("REFERENCIA_TPV")["IMPORTE_TPV"].nunique().reset_index()
+    refs_multiples = refs_multiples[refs_multiples["IMPORTE_TPV"] > 1]["REFERENCIA_TPV"].tolist()
+
+    for ref in refs_multiples:
+        mask = df_res["Venta a-Nº cliente"] == ref
+        df_res.loc[mask, "OBSERVACIONES"] += " | Revisar: 2 cobros distintos al mismo cliente (posible referencia automática o error de tecleo)"
+
+    # ==========================================================
+    # Aviso duplicados exactos
+    # ==========================================================
     for _, d in duplicados.iterrows():
         mask = (df_res["REFERENCIA_TPV"] == d["REFERENCIA_TPV"]) & (df_res["IMPORTE_TPV"] == d["IMPORTE_TPV"])
         df_res.loc[mask, "OBSERVACIONES"] += " | POSIBLE COBRO DUPLICADO"
 
+    # ==========================================================
     # Formato hoja 1
+    # ==========================================================
     df_vista = df_res.copy()
     df_vista["IMPORTE_ALBARAN"] = df_vista["IMPORTE_ALBARAN"].apply(formato_coma)
     df_vista["IMPORTE_TPV"] = df_vista["IMPORTE_TPV"].apply(formato_coma)
