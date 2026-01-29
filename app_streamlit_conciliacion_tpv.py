@@ -17,7 +17,6 @@ def leer_pdf_tpv(pdf):
     registros = []
     patron_importe = re.compile(r"\b\d+\.\d{2}\b")
     patron_ref = re.compile(r"\b\d{5}\b")
-    patron_ref = re.compile(r"\b\d{12}\b")
     patron_resultado = re.compile(r"\b(AUTORIZADA|DENEGADA)\b")
 
     with pdfplumber.open(pdf) as pdf_doc:
