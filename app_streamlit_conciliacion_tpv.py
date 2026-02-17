@@ -84,31 +84,31 @@ def leer_pdf_tpv(pdf):
 def leer_pdf_banco(pdf):
     registros = []
 
+    # 5 dígitos antes de la palabra Devolución + importe en la misma línea
+    patron_linea = re.compile(r"(\d{5}).*?Devoluci[oó]n.*?(\d+[,\.]\d{2})")
+
     with pdfplumber.open(pdf) as pdf_doc:
         for page in pdf_doc.pages:
-            tabla = page.extract_table()
-            if not tabla:
+            texto = page.extract_text()
+            if not texto:
                 continue
 
-            df = pd.DataFrame(tabla[1:], columns=tabla[0])
-            df.columns = [str(c).strip() for c in df.columns]
+            lineas = [l.strip() for l in texto.split("\n") if l.strip()]
 
-            if "Importe" in df.columns and "Núm. Factura" in df.columns:
+            for linea in lineas:
+                match = patron_linea.search(linea)
 
-                df_temp = df[["Núm. Factura", "Importe"]].copy()
+                if match:
+                    ref = match.group(1)
+                    importe = limpiar_importe_excel(match.group(2))
 
-                df_temp.rename(columns={
-                    "Núm. Factura": "REF_TPV",
-                    "Importe": "IMP_TPV"
-                }, inplace=True)
-
-                df_temp["REF_TPV"] = df_temp["REF_TPV"].astype(str).str.strip()
-                df_temp["IMP_TPV"] = df_temp["IMP_TPV"].apply(limpiar_importe_excel)
-
-                registros.append(df_temp)
+                    registros.append({
+                        "REF_TPV": ref,
+                        "IMP_TPV": importe
+                    })
 
     if registros:
-        return pd.concat(registros, ignore_index=True)
+        return pd.DataFrame(registros)
     else:
         return pd.DataFrame(columns=["REF_TPV", "IMP_TPV"])
 
