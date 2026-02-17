@@ -50,8 +50,8 @@ def leer_pdf_tpv(pdf):
 
                     if ref and resultado == "AUTORIZADA":
                         registros.append({
-                            "REFERENCIA_TPV": ref,
-                            "IMPORTE_TPV": importe
+                            "REF_TPV": ref,
+                            "IMP_TPV": importe
                         })
 
                 i += 1
@@ -68,14 +68,25 @@ def formato_coma(x):
     return "" if pd.isna(x) else f"{x:.2f}".replace(".", ",")
 
 # ==========================================================
+# AUTOAJUSTE COLUMNAS EXCEL
+# ==========================================================
+def autoajustar_columnas(writer, df, sheet_name):
+    worksheet = writer.sheets[sheet_name]
+    for i, col in enumerate(df.columns):
+        max_len = max(
+            df[col].astype(str).map(len).max(),
+            len(col)
+        ) + 2
+        worksheet.column_dimensions[chr(65 + i)].width = max_len
+
+# ==========================================================
 # VISTA PREVIA PDF
 # ==========================================================
 if pdf_file:
     st.subheader("Vista previa cobros TPV (solo AUTORIZADOS)")
     df_pdf = leer_pdf_tpv(pdf_file)
     df_prev = df_pdf.copy()
-    df_prev["IMPORTE_TPV"] = df_prev["IMPORTE_TPV"].apply(formato_coma)
-    df_prev.rename(columns={"REFERENCIA_TPV": "REF_TPV", "IMPORTE_TPV": "IMP_TPV"}, inplace=True)
+    df_prev["IMP_TPV"] = df_prev["IMP_TPV"].apply(formato_coma)
     st.dataframe(df_prev, use_container_width=True)
 
 # ==========================================================
@@ -88,17 +99,17 @@ if pdf_file and excel_file:
     # Mantener ceros iniciales
     df_alb = pd.read_excel(excel_file, dtype={"Venta a-Nº cliente": str})
 
-    df_alb["IMPORTE_ALBARAN"] = df_alb["Importe envío IVA incluido"].apply(limpiar_importe_excel)
+    df_alb["IMP_ALBARAN"] = df_alb["Importe envío IVA incluido"].apply(limpiar_importe_excel)
 
     # Totales por cliente
-    tot_cliente = df_alb.groupby("Venta a-Nº cliente")["IMPORTE_ALBARAN"].agg(["sum", "count"]).reset_index()
+    tot_cliente = df_alb.groupby("Venta a-Nº cliente")["IMP_ALBARAN"].agg(["sum", "count"]).reset_index()
     tot_cliente.columns = ["CLIENTE", "TOTAL_CLIENTE", "NUM_ALBARANES"]
 
     # TPV por referencia
-    tpv_ref = df_tpv.groupby("REFERENCIA_TPV", as_index=False)["IMPORTE_TPV"].sum()
+    tpv_ref = df_tpv.groupby("REF_TPV", as_index=False)["IMP_TPV"].sum()
 
     # Duplicados exactos
-    duplicados = df_tpv.groupby(["REFERENCIA_TPV", "IMPORTE_TPV"]).size().reset_index(name="VECES")
+    duplicados = df_tpv.groupby(["REF_TPV", "IMP_TPV"]).size().reset_index(name="VECES")
     duplicados = duplicados[duplicados["VECES"] > 1]
 
     # Cruce principal
@@ -106,7 +117,7 @@ if pdf_file and excel_file:
         tpv_ref,
         how="left",
         left_on="Venta a-Nº cliente",
-        right_on="REFERENCIA_TPV"
+        right_on="REF_TPV"
     ).merge(
         tot_cliente,
         how="left",
@@ -117,54 +128,45 @@ if pdf_file and excel_file:
     df_res["ESTADO COBRO"] = "NO COBRADO"
     df_res["OBSERVACIONES"] = ""
 
-    mask_ref = df_res["IMPORTE_TPV"].notna()
+    mask_ref = df_res["IMP_TPV"].notna()
     df_res.loc[mask_ref, "ESTADO COBRO"] = "COBRADO"
-    df_res.loc[mask_ref, "DIF_TOTAL"] = df_res["IMPORTE_TPV"] - df_res["TOTAL_CLIENTE"]
+    df_res.loc[mask_ref, "DIF_TOTAL"] = df_res["IMP_TPV"] - df_res["TOTAL_CLIENTE"]
 
     for idx, row in df_res[mask_ref].iterrows():
         dif = row["DIF_TOTAL"]
 
         if abs(dif) < 0.01:
-            df_res.at[idx, "OBSERVACIONES"] = f"Cobrado {formato_coma(row['IMPORTE_TPV'])} (total de {int(row['NUM_ALBARANES'])} albaranes)"
+            df_res.at[idx, "OBSERVACIONES"] = f"Cobrado {formato_coma(row['IMP_TPV'])} (total de {int(row['NUM_ALBARANES'])} albaranes)"
         elif dif > 0:
-            df_res.at[idx, "OBSERVACIONES"] = f"Cobrado de más {formato_coma(row['IMPORTE_TPV'])} – posible cobro albaranes atrasados"
+            df_res.at[idx, "OBSERVACIONES"] = f"Cobrado de más {formato_coma(row['IMP_TPV'])} – posible cobro albaranes atrasados"
         else:
-            df_res.at[idx, "OBSERVACIONES"] = f"Cobrado de menos {formato_coma(row['IMPORTE_TPV'])} – posible abono pendiente"
+            df_res.at[idx, "OBSERVACIONES"] = f"Cobrado de menos {formato_coma(row['IMP_TPV'])} – posible abono pendiente"
 
     # Coincidencia por total con referencia errónea
     for idx, row in df_res[df_res["ESTADO COBRO"] == "NO COBRADO"].iterrows():
         total = row["TOTAL_CLIENTE"]
-        candidato = df_tpv[abs(df_tpv["IMPORTE_TPV"] - total) < 0.01]
+        candidato = df_tpv[abs(df_tpv["IMP_TPV"] - total) < 0.01]
 
         if len(candidato) == 1:
             tpv = candidato.iloc[0]
-            df_res.at[idx, "IMPORTE_TPV"] = tpv["IMPORTE_TPV"]
-            df_res.at[idx, "REFERENCIA_TPV"] = tpv["REFERENCIA_TPV"]
+            df_res.at[idx, "IMP_TPV"] = tpv["IMP_TPV"]
+            df_res.at[idx, "REF_TPV"] = tpv["REF_TPV"]
             df_res.at[idx, "ESTADO COBRO"] = "COBRADO"
             df_res.at[idx, "OBSERVACIONES"] = (
-                f"Cobrado {formato_coma(tpv['IMPORTE_TPV'])} "
-                f"(total de {int(row['NUM_ALBARANES'])} albaranes) – posible error de referencia (TPV: {tpv['REFERENCIA_TPV']})"
+                f"Cobrado {formato_coma(tpv['IMP_TPV'])} "
+                f"(total de {int(row['NUM_ALBARANES'])} albaranes) – posible error de referencia (TPV: {tpv['REF_TPV']})"
             )
 
     # Aviso duplicados
     for _, d in duplicados.iterrows():
-        mask = (df_res["REFERENCIA_TPV"] == d["REFERENCIA_TPV"]) & (df_res["IMPORTE_TPV"] == d["IMPORTE_TPV"])
+        mask = (df_res["REF_TPV"] == d["REF_TPV"]) & (df_res["IMP_TPV"] == d["IMP_TPV"])
         df_res.loc[mask, "OBSERVACIONES"] += " | POSIBLE COBRO DUPLICADO"
 
-    # ==========================================================
-    # FORMATO FINAL (RENOMBRAR COLUMNAS)
-    # ==========================================================
+    # Formato hoja 1
     df_vista = df_res.copy()
-
-    df_vista["IMPORTE_ALBARAN"] = df_vista["IMPORTE_ALBARAN"].apply(formato_coma)
-    df_vista["IMPORTE_TPV"] = df_vista["IMPORTE_TPV"].apply(formato_coma)
+    df_vista["IMP_ALBARAN"] = df_vista["IMP_ALBARAN"].apply(formato_coma)
+    df_vista["IMP_TPV"] = df_vista["IMP_TPV"].apply(formato_coma)
     df_vista["TOTAL_CLIENTE"] = df_vista["TOTAL_CLIENTE"].apply(formato_coma)
-
-    df_vista.rename(columns={
-        "IMPORTE_ALBARAN": "IMP_ALBARAN",
-        "REFERENCIA_TPV": "REF_TPV",
-        "IMPORTE_TPV": "IMP_TPV"
-    }, inplace=True)
 
     st.subheader("Resultado conciliación")
     st.dataframe(df_vista, use_container_width=True)
@@ -177,18 +179,14 @@ if pdf_file and excel_file:
 
     df_sin = df_tpv.copy()
     df_sin = df_sin[
-        (~df_sin["REFERENCIA_TPV"].isin(refs_excel)) &
-        (~df_sin["IMPORTE_TPV"].round(2).isin(totales_excel))
+        (~df_sin["REF_TPV"].isin(refs_excel)) &
+        (~df_sin["IMP_TPV"].round(2).isin(totales_excel))
     ]
 
-    df_sin["IMPORTE_TPV"] = df_sin["IMPORTE_TPV"].apply(formato_coma)
-    df_sin.rename(columns={
-        "REFERENCIA_TPV": "REF_TPV",
-        "IMPORTE_TPV": "IMP_TPV"
-    }, inplace=True)
+    df_sin["IMP_TPV"] = df_sin["IMP_TPV"].apply(formato_coma)
 
     # ==========================================================
-    # DESCARGA EXCEL
+    # DESCARGA EXCEL CON AUTOAJUSTE
     # ==========================================================
     buffer = BytesIO()
     st.markdown("### Nombre del archivo de descarga")
@@ -197,6 +195,9 @@ if pdf_file and excel_file:
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         df_vista.to_excel(writer, index=False, sheet_name="Conciliación albaranes")
         df_sin.to_excel(writer, index=False, sheet_name="Cobros sin albarán")
+
+        autoajustar_columnas(writer, df_vista, "Conciliación albaranes")
+        autoajustar_columnas(writer, df_sin, "Cobros sin albarán")
 
     buffer.seek(0)
 
