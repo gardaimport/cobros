@@ -177,11 +177,11 @@ with tab1:
         st.dataframe(df_vista, use_container_width=True)
 
 # ==========================================================
-# 🟩 PESTAÑA 2 - COMPROBANTES BANCARIOS
+# 🟩 PESTAÑA 2 - COMPROBANTES BANCARIOS (MARCA EN VIVO)
 # ==========================================================
 with tab2:
 
-    st.subheader("Carga de albaranes y comprobantes por terminal")
+    st.subheader("Conciliación por comprobantes bancarios")
 
     excel_file_2 = st.file_uploader("Sube el Excel de albaranes", type=["xlsx", "xls"], key="excel2")
 
@@ -195,6 +195,9 @@ with tab2:
     if "df_cobros_acumulados" not in st.session_state:
         st.session_state.df_cobros_acumulados = pd.DataFrame(columns=["REF_TPV", "IMP_TPV"])
 
+    # ==========================================================
+    # AÑADIR COBROS
+    # ==========================================================
     if pdf_files:
         if st.button("Añadir comprobantes al acumulado"):
             nuevos = []
@@ -210,61 +213,90 @@ with tab2:
                 )
                 st.success(f"Se han añadido {len(df_nuevos)} cobros al acumulado")
 
-    if not st.session_state.df_cobros_acumulados.empty:
-        st.markdown("### Cobros acumulados")
-        df_prev2 = st.session_state.df_cobros_acumulados.copy()
-        df_prev2["IMP_TPV"] = df_prev2["IMP_TPV"].apply(formato_coma)
-        st.dataframe(df_prev2, use_container_width=True)
-
     if st.button("Limpiar cobros acumulados"):
         st.session_state.df_cobros_acumulados = pd.DataFrame(columns=["REF_TPV", "IMP_TPV"])
         st.warning("Cobros acumulados eliminados")
 
-    if excel_file_2 and not st.session_state.df_cobros_acumulados.empty:
-
-        df_tpv = st.session_state.df_cobros_acumulados.copy()
+    # ==========================================================
+    # PROCESO PRINCIPAL
+    # ==========================================================
+    if excel_file_2:
 
         df_alb = pd.read_excel(excel_file_2, dtype={"Venta a-Nº cliente": str})
         df_alb["IMP_ALBARAN"] = df_alb["Importe envío IVA incluido"].apply(limpiar_importe_excel)
 
+        # Totales por cliente
         tot_cliente = df_alb.groupby("Venta a-Nº cliente")["IMP_ALBARAN"].agg(["sum", "count"]).reset_index()
         tot_cliente.columns = ["CLIENTE", "TOTAL_CLIENTE", "NUM_ALBARANES"]
 
-        tpv_ref = df_tpv.groupby("REF_TPV", as_index=False)["IMP_TPV"].sum()
-
         df_res = df_alb.merge(
-            tpv_ref,
-            how="left",
-            left_on="Venta a-Nº cliente",
-            right_on="REF_TPV"
-        ).merge(
             tot_cliente,
             how="left",
             left_on="Venta a-Nº cliente",
             right_on="CLIENTE"
         )
 
+        df_res["IMP_TPV"] = None
         df_res["ESTADO COBRO"] = "NO COBRADO"
         df_res["OBSERVACIONES"] = ""
 
-        mask_ref = df_res["IMP_TPV"].notna()
-        df_res.loc[mask_ref, "ESTADO COBRO"] = "COBRADO"
-        df_res.loc[mask_ref, "DIF_TOTAL"] = df_res["IMP_TPV"] - df_res["TOTAL_CLIENTE"]
+        # ==========================================================
+        # APLICAR COBROS ACUMULADOS
+        # ==========================================================
+        if not st.session_state.df_cobros_acumulados.empty:
 
-        for idx, row in df_res[mask_ref].iterrows():
-            dif = row["DIF_TOTAL"]
+            tpv_ref = st.session_state.df_cobros_acumulados.groupby("REF_TPV", as_index=False)["IMP_TPV"].sum()
 
-            if abs(dif) < 0.01:
-                df_res.at[idx, "OBSERVACIONES"] = f"Cobrado {formato_coma(row['IMP_TPV'])} (total de {int(row['NUM_ALBARANES'])} albaranes)"
-            elif dif > 0:
-                df_res.at[idx, "OBSERVACIONES"] = f"Cobrado de más {formato_coma(row['IMP_TPV'])}"
-            else:
-                df_res.at[idx, "OBSERVACIONES"] = f"Cobrado de menos {formato_coma(row['IMP_TPV'])}"
+            df_res = df_res.merge(
+                tpv_ref,
+                how="left",
+                left_on="Venta a-Nº cliente",
+                right_on="REF_TPV",
+                suffixes=("", "_TPV")
+            )
 
+            df_res["IMP_TPV"] = df_res["IMP_TPV_TPV"]
+            df_res.drop(columns=["IMP_TPV_TPV", "REF_TPV"], inplace=True)
+
+            mask_ref = df_res["IMP_TPV"].notna()
+            df_res.loc[mask_ref, "ESTADO COBRO"] = "COBRADO"
+            df_res.loc[mask_ref, "DIF_TOTAL"] = df_res["IMP_TPV"] - df_res["TOTAL_CLIENTE"]
+
+            for idx, row in df_res[mask_ref].iterrows():
+                dif = row["DIF_TOTAL"]
+
+                if abs(dif) < 0.01:
+                    df_res.at[idx, "OBSERVACIONES"] = f"Cobrado {formato_coma(row['IMP_TPV'])} (total de {int(row['NUM_ALBARANES'])} albaranes)"
+                elif dif > 0:
+                    df_res.at[idx, "OBSERVACIONES"] = f"Cobrado de más {formato_coma(row['IMP_TPV'])}"
+                else:
+                    df_res.at[idx, "OBSERVACIONES"] = f"Cobrado de menos {formato_coma(row['IMP_TPV'])}"
+
+        # ==========================================================
+        # VISTA PREVIA EN VIVO
+        # ==========================================================
         df_vista2 = df_res.copy()
         df_vista2["IMP_ALBARAN"] = df_vista2["IMP_ALBARAN"].apply(formato_coma)
         df_vista2["IMP_TPV"] = df_vista2["IMP_TPV"].apply(formato_coma)
         df_vista2["TOTAL_CLIENTE"] = df_vista2["TOTAL_CLIENTE"].apply(formato_coma)
 
-        st.subheader("Resultado conciliación por comprobantes")
+        st.markdown("### Vista previa del Excel con cobros aplicados")
         st.dataframe(df_vista2, use_container_width=True)
+
+        # ==========================================================
+        # DESCARGA EXCEL FINAL
+        # ==========================================================
+        buffer = BytesIO()
+
+        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+            df_vista2.to_excel(writer, index=False, sheet_name="Conciliación banco")
+            autoajustar_columnas(writer, df_vista2, "Conciliación banco")
+
+        buffer.seek(0)
+
+        st.download_button(
+            "Descargar Excel final",
+            data=buffer,
+            file_name="conciliacion_banco.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
