@@ -84,8 +84,11 @@ def leer_pdf_tpv(pdf):
 def leer_pdf_banco(pdf):
     registros = []
 
-    # 5 dígitos antes de la palabra Devolución + importe en la misma línea
-    patron_linea = re.compile(r"(\d{5}).*?Devoluci[oó]n.*?(\d+[,\.]\d{2})")
+    # 5 dígitos antes de "Devolución" y el importe después de "Autorización"
+    patron_linea = re.compile(
+        r"(\d{5}).*?Devoluci[oó]n.*?Autorizaci[oó]n.*?(\d+[,\.]\d{2})",
+        re.IGNORECASE
+    )
 
     with pdfplumber.open(pdf) as pdf_doc:
         for page in pdf_doc.pages:
