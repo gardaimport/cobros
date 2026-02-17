@@ -83,9 +83,10 @@ if pdf_file:
 if pdf_file and excel_file:
 
     df_tpv = leer_pdf_tpv(pdf_file)
-    df_alb = pd.read_excel(excel_file)
 
-    df_alb["Venta a-Nº cliente"] = df_alb["Venta a-Nº cliente"].astype(str)
+    # 🔴 CORRECCIÓN: forzar cliente como texto para mantener ceros iniciales
+    df_alb = pd.read_excel(excel_file, dtype={"Venta a-Nº cliente": str})
+
     df_alb["IMPORTE_ALBARAN"] = df_alb["Importe envío IVA incluido"].apply(limpiar_importe_excel)
     df_alb["Fecha envío"] = pd.to_datetime(df_alb["Fecha envío"], errors="coerce").dt.strftime("%d/%m/%Y")
 
