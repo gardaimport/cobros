@@ -75,6 +75,7 @@ if pdf_file:
     df_pdf = leer_pdf_tpv(pdf_file)
     df_prev = df_pdf.copy()
     df_prev["IMPORTE_TPV"] = df_prev["IMPORTE_TPV"].apply(formato_coma)
+    df_prev.rename(columns={"REFERENCIA_TPV": "REF_TPV", "IMPORTE_TPV": "IMP_TPV"}, inplace=True)
     st.dataframe(df_prev, use_container_width=True)
 
 # ==========================================================
@@ -84,7 +85,7 @@ if pdf_file and excel_file:
 
     df_tpv = leer_pdf_tpv(pdf_file)
 
-    # 🔴 Mantener ceros iniciales del cliente
+    # Mantener ceros iniciales
     df_alb = pd.read_excel(excel_file, dtype={"Venta a-Nº cliente": str})
 
     df_alb["IMPORTE_ALBARAN"] = df_alb["Importe envío IVA incluido"].apply(limpiar_importe_excel)
@@ -150,11 +151,20 @@ if pdf_file and excel_file:
         mask = (df_res["REFERENCIA_TPV"] == d["REFERENCIA_TPV"]) & (df_res["IMPORTE_TPV"] == d["IMPORTE_TPV"])
         df_res.loc[mask, "OBSERVACIONES"] += " | POSIBLE COBRO DUPLICADO"
 
-    # Formato hoja 1
+    # ==========================================================
+    # FORMATO FINAL (RENOMBRAR COLUMNAS)
+    # ==========================================================
     df_vista = df_res.copy()
+
     df_vista["IMPORTE_ALBARAN"] = df_vista["IMPORTE_ALBARAN"].apply(formato_coma)
     df_vista["IMPORTE_TPV"] = df_vista["IMPORTE_TPV"].apply(formato_coma)
     df_vista["TOTAL_CLIENTE"] = df_vista["TOTAL_CLIENTE"].apply(formato_coma)
+
+    df_vista.rename(columns={
+        "IMPORTE_ALBARAN": "IMP_ALBARAN",
+        "REFERENCIA_TPV": "REF_TPV",
+        "IMPORTE_TPV": "IMP_TPV"
+    }, inplace=True)
 
     st.subheader("Resultado conciliación")
     st.dataframe(df_vista, use_container_width=True)
@@ -172,9 +182,13 @@ if pdf_file and excel_file:
     ]
 
     df_sin["IMPORTE_TPV"] = df_sin["IMPORTE_TPV"].apply(formato_coma)
+    df_sin.rename(columns={
+        "REFERENCIA_TPV": "REF_TPV",
+        "IMPORTE_TPV": "IMP_TPV"
+    }, inplace=True)
 
     # ==========================================================
-    # DESCARGA EXCEL CON DOS HOJAS
+    # DESCARGA EXCEL
     # ==========================================================
     buffer = BytesIO()
     st.markdown("### Nombre del archivo de descarga")
