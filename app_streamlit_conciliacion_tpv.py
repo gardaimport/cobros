@@ -68,18 +68,6 @@ def formato_coma(x):
     return "" if pd.isna(x) else f"{x:.2f}".replace(".", ",")
 
 # ==========================================================
-# AUTOAJUSTE COLUMNAS EXCEL
-# ==========================================================
-def autoajustar_columnas(writer, df, sheet_name):
-    worksheet = writer.sheets[sheet_name]
-    for i, col in enumerate(df.columns):
-        max_len = max(
-            df[col].astype(str).map(len).max(),
-            len(col)
-        ) + 2
-        worksheet.column_dimensions[chr(65 + i)].width = max_len
-
-# ==========================================================
 # VISTA PREVIA PDF
 # ==========================================================
 if pdf_file:
@@ -127,15 +115,19 @@ if pdf_file and excel_file:
 
     df_res["ESTADO COBRO"] = "NO COBRADO"
     df_res["OBSERVACIONES"] = ""
+    df_res["DIF_TOTAL"] = ""
 
     mask_ref = df_res["IMP_TPV"].notna()
     df_res.loc[mask_ref, "ESTADO COBRO"] = "COBRADO"
+
+    # Calcular diferencia contra TOTAL_CLIENTE
     df_res.loc[mask_ref, "DIF_TOTAL"] = df_res["IMP_TPV"] - df_res["TOTAL_CLIENTE"]
 
     for idx, row in df_res[mask_ref].iterrows():
         dif = row["DIF_TOTAL"]
 
         if abs(dif) < 0.01:
+            df_res.at[idx, "DIF_TOTAL"] = 0
             df_res.at[idx, "OBSERVACIONES"] = f"Cobrado {formato_coma(row['IMP_TPV'])} (total de {int(row['NUM_ALBARANES'])} albaranes)"
         elif dif > 0:
             df_res.at[idx, "OBSERVACIONES"] = f"Cobrado de más {formato_coma(row['IMP_TPV'])} – posible cobro albaranes atrasados"
@@ -152,6 +144,7 @@ if pdf_file and excel_file:
             df_res.at[idx, "IMP_TPV"] = tpv["IMP_TPV"]
             df_res.at[idx, "REF_TPV"] = tpv["REF_TPV"]
             df_res.at[idx, "ESTADO COBRO"] = "COBRADO"
+            df_res.at[idx, "DIF_TOTAL"] = 0
             df_res.at[idx, "OBSERVACIONES"] = (
                 f"Cobrado {formato_coma(tpv['IMP_TPV'])} "
                 f"(total de {int(row['NUM_ALBARANES'])} albaranes) – posible error de referencia (TPV: {tpv['REF_TPV']})"
@@ -162,11 +155,12 @@ if pdf_file and excel_file:
         mask = (df_res["REF_TPV"] == d["REF_TPV"]) & (df_res["IMP_TPV"] == d["IMP_TPV"])
         df_res.loc[mask, "OBSERVACIONES"] += " | POSIBLE COBRO DUPLICADO"
 
-    # Formato hoja 1
+    # Formato vista
     df_vista = df_res.copy()
     df_vista["IMP_ALBARAN"] = df_vista["IMP_ALBARAN"].apply(formato_coma)
     df_vista["IMP_TPV"] = df_vista["IMP_TPV"].apply(formato_coma)
     df_vista["TOTAL_CLIENTE"] = df_vista["TOTAL_CLIENTE"].apply(formato_coma)
+    df_vista["DIF_TOTAL"] = df_vista["DIF_TOTAL"].apply(lambda x: "" if x == "" else formato_coma(x))
 
     st.subheader("Resultado conciliación")
     st.dataframe(df_vista, use_container_width=True)
@@ -186,7 +180,7 @@ if pdf_file and excel_file:
     df_sin["IMP_TPV"] = df_sin["IMP_TPV"].apply(formato_coma)
 
     # ==========================================================
-    # DESCARGA EXCEL CON AUTOAJUSTE
+    # DESCARGA EXCEL CON AUTOAJUSTE DE COLUMNAS
     # ==========================================================
     buffer = BytesIO()
     st.markdown("### Nombre del archivo de descarga")
@@ -196,8 +190,14 @@ if pdf_file and excel_file:
         df_vista.to_excel(writer, index=False, sheet_name="Conciliación albaranes")
         df_sin.to_excel(writer, index=False, sheet_name="Cobros sin albarán")
 
-        autoajustar_columnas(writer, df_vista, "Conciliación albaranes")
-        autoajustar_columnas(writer, df_sin, "Cobros sin albarán")
+        for sheet_name, df in {"Conciliación albaranes": df_vista, "Cobros sin albarán": df_sin}.items():
+            ws = writer.sheets[sheet_name]
+            for col_idx, col in enumerate(df.columns, 1):
+                max_len = max(
+                    df[col].astype(str).map(len).max(),
+                    len(col)
+                ) + 2
+                ws.column_dimensions[chr(64 + col_idx)].width = max_len
 
     buffer.seek(0)
 
