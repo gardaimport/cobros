@@ -90,13 +90,10 @@ if pdf_file:
 if pdf_file and excel_file:
 
     df_tpv = leer_pdf_tpv(pdf_file)
-
-    # Mantener ceros iniciales
     df_alb = pd.read_excel(excel_file, dtype={"Venta a-Nº cliente": str})
 
     df_alb["IMP_ALBARAN"] = df_alb["Importe envío IVA incluido"].apply(limpiar_importe_excel)
 
-    # Asegurar tipos numéricos
     df_alb["IMP_ALBARAN"] = pd.to_numeric(df_alb["IMP_ALBARAN"], errors="coerce")
     df_tpv["IMP_TPV"] = pd.to_numeric(df_tpv["IMP_TPV"], errors="coerce")
 
@@ -104,12 +101,10 @@ if pdf_file and excel_file:
     tot_cliente = df_alb.groupby("Venta a-Nº cliente")["IMP_ALBARAN"].agg(["sum", "count"]).reset_index()
     tot_cliente.columns = ["CLIENTE", "TOTAL_CLIENTE", "NUM_ALBARANES"]
 
-    tot_cliente["TOTAL_CLIENTE"] = pd.to_numeric(tot_cliente["TOTAL_CLIENTE"], errors="coerce")
-
     # TPV por referencia
     tpv_ref = df_tpv.groupby("REF_TPV", as_index=False)["IMP_TPV"].sum()
 
-    # Duplicados exactos
+    # Duplicados
     duplicados = df_tpv.groupby(["REF_TPV", "IMP_TPV"]).size().reset_index(name="VECES")
     duplicados = duplicados[duplicados["VECES"] > 1]
 
@@ -128,14 +123,11 @@ if pdf_file and excel_file:
 
     df_res["ESTADO COBRO"] = "NO COBRADO"
     df_res["OBSERVACIONES"] = ""
-
-    # 🔴 DIF_TOTAL SIEMPRE NUMÉRICO
     df_res["DIF_TOTAL"] = 0.0
 
     mask_ref = df_res["IMP_TPV"].notna()
     df_res.loc[mask_ref, "ESTADO COBRO"] = "COBRADO"
 
-    # Cálculo seguro
     df_res.loc[mask_ref, "DIF_TOTAL"] = (
         df_res.loc[mask_ref, "IMP_TPV"].astype(float) -
         df_res.loc[mask_ref, "TOTAL_CLIENTE"].astype(float)
@@ -152,7 +144,7 @@ if pdf_file and excel_file:
         else:
             df_res.at[idx, "OBSERVACIONES"] = f"Cobrado de menos {formato_coma(row['IMP_TPV'])} – posible abono pendiente"
 
-    # Coincidencia por total con referencia errónea
+    # Error referencia
     for idx, row in df_res[df_res["ESTADO COBRO"] == "NO COBRADO"].iterrows():
         total = row["TOTAL_CLIENTE"]
         candidato = df_tpv[abs(df_tpv["IMP_TPV"] - total) < 0.01]
@@ -168,12 +160,12 @@ if pdf_file and excel_file:
                 f"(total de {int(row['NUM_ALBARANES'])} albaranes) – posible error de referencia (TPV: {tpv['REF_TPV']})"
             )
 
-    # Aviso duplicados
+    # Duplicados
     for _, d in duplicados.iterrows():
         mask = (df_res["REF_TPV"] == d["REF_TPV"]) & (df_res["IMP_TPV"] == d["IMP_TPV"])
         df_res.loc[mask, "OBSERVACIONES"] += " | POSIBLE COBRO DUPLICADO"
 
-    # Formato final
+    # Formato
     df_vista = df_res.copy()
     df_vista["IMP_ALBARAN"] = df_vista["IMP_ALBARAN"].apply(formato_coma)
     df_vista["IMP_TPV"] = df_vista["IMP_TPV"].apply(formato_coma)
@@ -183,9 +175,7 @@ if pdf_file and excel_file:
     st.subheader("Resultado conciliación")
     st.dataframe(df_vista, use_container_width=True)
 
-    # ==========================================================
     # HOJA 2
-    # ==========================================================
     refs_excel = set(df_alb["Venta a-Nº cliente"].astype(str))
     totales_excel = set(tot_cliente["TOTAL_CLIENTE"].round(2))
 
@@ -197,9 +187,7 @@ if pdf_file and excel_file:
 
     df_sin["IMP_TPV"] = df_sin["IMP_TPV"].apply(formato_coma)
 
-    # ==========================================================
-    # EXPORTAR EXCEL
-    # ==========================================================
+    # EXPORTAR
     buffer = BytesIO()
     st.markdown("### Nombre del archivo de descarga")
     nombre_excel = st.text_input("Escribe el nombre del Excel (sin .xlsx)", "conciliacion_tpv")
@@ -211,7 +199,8 @@ if pdf_file and excel_file:
         for sheet, df in {"Conciliación albaranes": df_vista, "Cobros sin albarán": df_sin}.items():
             ws = writer.sheets[sheet]
             for i, col in enumerate(df.columns, 1):
-                max_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
+                valores = df[col].fillna("").astype(str)
+                max_len = max(valores.apply(len).max(), len(col)) + 2
                 ws.column_dimensions[chr(64 + i)].width = max_len
 
     buffer.seek(0)
