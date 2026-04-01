@@ -50,8 +50,8 @@ def leer_pdf_tpv(pdf):
 
                     if ref and resultado == "AUTORIZADA":
                         registros.append({
-                            "REF_TPV": ref,
-                            "IMP_TPV": importe
+                            "REF_TPV": str(ref),
+                            "IMP_TPV": float(importe)
                         })
 
                 i += 1
@@ -65,7 +65,10 @@ def limpiar_importe_excel(v):
         return None
 
 def formato_coma(x):
-    return "" if pd.isna(x) else f"{x:.2f}".replace(".", ",")
+    try:
+        return "" if pd.isna(x) else f"{float(x):.2f}".replace(".", ",")
+    except:
+        return ""
 
 # ==========================================================
 # VISTA PREVIA PDF
@@ -73,9 +76,13 @@ def formato_coma(x):
 if pdf_file:
     st.subheader("Vista previa cobros TPV (solo AUTORIZADOS)")
     df_pdf = leer_pdf_tpv(pdf_file)
-    df_prev = df_pdf.copy()
-    df_prev["IMP_TPV"] = df_prev["IMP_TPV"].apply(formato_coma)
-    st.dataframe(df_prev, use_container_width=True)
+
+    if not df_pdf.empty:
+        df_prev = df_pdf.copy()
+        df_prev["IMP_TPV"] = df_prev["IMP_TPV"].apply(formato_coma)
+        st.dataframe(df_prev, use_container_width=True)
+    else:
+        st.warning("No se han detectado cobros en el PDF")
 
 # ==========================================================
 # CONCILIACIÓN
@@ -89,9 +96,15 @@ if pdf_file and excel_file:
 
     df_alb["IMP_ALBARAN"] = df_alb["Importe envío IVA incluido"].apply(limpiar_importe_excel)
 
+    # Asegurar tipos numéricos
+    df_alb["IMP_ALBARAN"] = pd.to_numeric(df_alb["IMP_ALBARAN"], errors="coerce")
+    df_tpv["IMP_TPV"] = pd.to_numeric(df_tpv["IMP_TPV"], errors="coerce")
+
     # Totales por cliente
     tot_cliente = df_alb.groupby("Venta a-Nº cliente")["IMP_ALBARAN"].agg(["sum", "count"]).reset_index()
     tot_cliente.columns = ["CLIENTE", "TOTAL_CLIENTE", "NUM_ALBARANES"]
+
+    tot_cliente["TOTAL_CLIENTE"] = pd.to_numeric(tot_cliente["TOTAL_CLIENTE"], errors="coerce")
 
     # TPV por referencia
     tpv_ref = df_tpv.groupby("REF_TPV", as_index=False)["IMP_TPV"].sum()
@@ -100,7 +113,7 @@ if pdf_file and excel_file:
     duplicados = df_tpv.groupby(["REF_TPV", "IMP_TPV"]).size().reset_index(name="VECES")
     duplicados = duplicados[duplicados["VECES"] > 1]
 
-    # Cruce principal
+    # Cruce
     df_res = df_alb.merge(
         tpv_ref,
         how="left",
@@ -115,19 +128,24 @@ if pdf_file and excel_file:
 
     df_res["ESTADO COBRO"] = "NO COBRADO"
     df_res["OBSERVACIONES"] = ""
-    df_res["DIF_TOTAL"] = ""
+
+    # 🔴 DIF_TOTAL SIEMPRE NUMÉRICO
+    df_res["DIF_TOTAL"] = 0.0
 
     mask_ref = df_res["IMP_TPV"].notna()
     df_res.loc[mask_ref, "ESTADO COBRO"] = "COBRADO"
 
-    # Calcular diferencia contra TOTAL_CLIENTE
-    df_res.loc[mask_ref, "DIF_TOTAL"] = df_res["IMP_TPV"] - df_res["TOTAL_CLIENTE"]
+    # Cálculo seguro
+    df_res.loc[mask_ref, "DIF_TOTAL"] = (
+        df_res.loc[mask_ref, "IMP_TPV"].astype(float) -
+        df_res.loc[mask_ref, "TOTAL_CLIENTE"].astype(float)
+    )
 
     for idx, row in df_res[mask_ref].iterrows():
         dif = row["DIF_TOTAL"]
 
         if abs(dif) < 0.01:
-            df_res.at[idx, "DIF_TOTAL"] = 0
+            df_res.at[idx, "DIF_TOTAL"] = 0.0
             df_res.at[idx, "OBSERVACIONES"] = f"Cobrado {formato_coma(row['IMP_TPV'])} (total de {int(row['NUM_ALBARANES'])} albaranes)"
         elif dif > 0:
             df_res.at[idx, "OBSERVACIONES"] = f"Cobrado de más {formato_coma(row['IMP_TPV'])} – posible cobro albaranes atrasados"
@@ -144,7 +162,7 @@ if pdf_file and excel_file:
             df_res.at[idx, "IMP_TPV"] = tpv["IMP_TPV"]
             df_res.at[idx, "REF_TPV"] = tpv["REF_TPV"]
             df_res.at[idx, "ESTADO COBRO"] = "COBRADO"
-            df_res.at[idx, "DIF_TOTAL"] = 0
+            df_res.at[idx, "DIF_TOTAL"] = 0.0
             df_res.at[idx, "OBSERVACIONES"] = (
                 f"Cobrado {formato_coma(tpv['IMP_TPV'])} "
                 f"(total de {int(row['NUM_ALBARANES'])} albaranes) – posible error de referencia (TPV: {tpv['REF_TPV']})"
@@ -155,18 +173,18 @@ if pdf_file and excel_file:
         mask = (df_res["REF_TPV"] == d["REF_TPV"]) & (df_res["IMP_TPV"] == d["IMP_TPV"])
         df_res.loc[mask, "OBSERVACIONES"] += " | POSIBLE COBRO DUPLICADO"
 
-    # Formato vista
+    # Formato final
     df_vista = df_res.copy()
     df_vista["IMP_ALBARAN"] = df_vista["IMP_ALBARAN"].apply(formato_coma)
     df_vista["IMP_TPV"] = df_vista["IMP_TPV"].apply(formato_coma)
     df_vista["TOTAL_CLIENTE"] = df_vista["TOTAL_CLIENTE"].apply(formato_coma)
-    df_vista["DIF_TOTAL"] = df_vista["DIF_TOTAL"].apply(lambda x: "" if x == "" else formato_coma(x))
+    df_vista["DIF_TOTAL"] = df_vista["DIF_TOTAL"].apply(formato_coma)
 
     st.subheader("Resultado conciliación")
     st.dataframe(df_vista, use_container_width=True)
 
     # ==========================================================
-    # HOJA 2: COBROS SIN ALBARÁN
+    # HOJA 2
     # ==========================================================
     refs_excel = set(df_alb["Venta a-Nº cliente"].astype(str))
     totales_excel = set(tot_cliente["TOTAL_CLIENTE"].round(2))
@@ -180,7 +198,7 @@ if pdf_file and excel_file:
     df_sin["IMP_TPV"] = df_sin["IMP_TPV"].apply(formato_coma)
 
     # ==========================================================
-    # DESCARGA EXCEL CON AUTOAJUSTE DE COLUMNAS
+    # EXPORTAR EXCEL
     # ==========================================================
     buffer = BytesIO()
     st.markdown("### Nombre del archivo de descarga")
@@ -190,14 +208,11 @@ if pdf_file and excel_file:
         df_vista.to_excel(writer, index=False, sheet_name="Conciliación albaranes")
         df_sin.to_excel(writer, index=False, sheet_name="Cobros sin albarán")
 
-        for sheet_name, df in {"Conciliación albaranes": df_vista, "Cobros sin albarán": df_sin}.items():
-            ws = writer.sheets[sheet_name]
-            for col_idx, col in enumerate(df.columns, 1):
-                max_len = max(
-                    df[col].astype(str).map(len).max(),
-                    len(col)
-                ) + 2
-                ws.column_dimensions[chr(64 + col_idx)].width = max_len
+        for sheet, df in {"Conciliación albaranes": df_vista, "Cobros sin albarán": df_sin}.items():
+            ws = writer.sheets[sheet]
+            for i, col in enumerate(df.columns, 1):
+                max_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
+                ws.column_dimensions[chr(64 + i)].width = max_len
 
     buffer.seek(0)
 
