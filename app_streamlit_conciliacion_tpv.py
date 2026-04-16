@@ -3,6 +3,7 @@ import pandas as pd
 import pdfplumber
 import re
 from io import BytesIO
+from datetime import datetime  # 👈 NUEVO
 
 st.set_page_config(page_title="Comprobación COBROS TPV", layout="wide")
 st.title("Comprobación COBROS TPV")
@@ -187,10 +188,17 @@ if pdf_file and excel_file:
 
     df_sin["IMP_TPV"] = df_sin["IMP_TPV"].apply(formato_coma)
 
-    # EXPORTAR
+    # ==========================================================
+    # EXPORTAR EXCEL CON FECHA Y HORA
+    # ==========================================================
     buffer = BytesIO()
+
     st.markdown("### Nombre del archivo de descarga")
     nombre_excel = st.text_input("Escribe el nombre del Excel (sin .xlsx)", "conciliacion_tpv")
+
+    # 👇 FECHA Y HORA AUTOMÁTICA
+    fecha_hora = datetime.now().strftime("%d-%m-%Y_%H-%M")
+    nombre_final = f"{nombre_excel}_{fecha_hora}"
 
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         df_vista.to_excel(writer, index=False, sheet_name="Conciliación albaranes")
@@ -206,9 +214,9 @@ if pdf_file and excel_file:
     buffer.seek(0)
 
     st.download_button(
-        f"Descargar conciliación en Excel ({nombre_excel}.xlsx)",
+        f"Descargar conciliación en Excel ({nombre_final}.xlsx)",
         data=buffer,
-        file_name=f"{nombre_excel}.xlsx",
+        file_name=f"{nombre_final}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
