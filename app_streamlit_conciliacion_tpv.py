@@ -8,7 +8,8 @@ from datetime import datetime  # 👈 NUEVO
 st.set_page_config(page_title="Comprobación COBROS TPV", layout="wide")
 st.title("Comprobación COBROS TPV")
 
-pdf_file = st.file_uploader("Sube el PDF de cobros TPV", type=["pdf"])
+# Se añade accept_multiple_files=True para permitir varios PDFs a la vez
+pdf_files = st.file_uploader("Sube el PDF de cobros TPV", type=["pdf"], accept_multiple_files=True)
 excel_file = st.file_uploader("Sube el Excel de albaranes", type=["xlsx", "xls"])
 
 # ==========================================================
@@ -74,9 +75,22 @@ def formato_coma(x):
 # ==========================================================
 # VISTA PREVIA PDF
 # ==========================================================
-if pdf_file:
+if pdf_files:
     st.subheader("Vista previa cobros TPV (solo AUTORIZADOS)")
-    df_pdf = leer_pdf_tpv(pdf_file)
+    
+    # Procesamos todos los PDFs subidos y los unimos en un único DataFrame
+    lista_dfs = []
+    for pdf in pdf_files:
+        df_individual = leer_pdf_tpv(pdf)
+        if not df_individual.empty:
+            lista_dfs.append(df_individual)
+            
+    if lista_dfs:
+        df_pdf = pd.concat(lista_dfs, ignore_index=True)
+        # Si hay misma referencia e importe entre los PDFs, elimina el duplicado y deja solo uno
+        df_pdf = df_pdf.drop_duplicates(subset=["REF_TPV", "IMP_TPV"], keep="first")
+    else:
+        df_pdf = pd.DataFrame()
 
     if not df_pdf.empty:
         df_prev = df_pdf.copy()
@@ -88,9 +102,9 @@ if pdf_file:
 # ==========================================================
 # CONCILIACIÓN
 # ==========================================================
-if pdf_file and excel_file:
+if pdf_files and excel_file and not df_pdf.empty:
 
-    df_tpv = leer_pdf_tpv(pdf_file)
+    df_tpv = df_pdf.copy()
     df_alb = pd.read_excel(excel_file, dtype={"Venta a-Nº cliente": str})
 
     df_alb["IMP_ALBARAN"] = df_alb["Importe envío IVA incluido"].apply(limpiar_importe_excel)
