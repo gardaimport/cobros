@@ -78,7 +78,7 @@ def leer_pdf_tpv(pdf):
     return pd.DataFrame(registros)
 
 # ==========================================================
-# LECTOR PDF 2: NUEVO FORMATO REDSYS (CON COMENTARIOS DE CONTROL)
+# LECTOR PDF 2: NUEVO FORMATO REDSYS
 # ==========================================================
 def leer_pdf_tpv_redsys(pdf):
     registros = []
@@ -94,14 +94,13 @@ def leer_pdf_tpv_redsys(pdf):
                 continue
 
             # Separamos por bloques de comillas dobles (que es como Redsys agrupa las filas de la tabla)
-            # Si no hay comillas, separamos por líneas estándar (\n)
             if '"' in texto:
                 filas = [f.strip() for f in texto.split('"') if f.strip()]
             else:
                 filas = [f.strip() for f in texto.split('\n') if f.strip()]
 
             for fila in filas:
-                # Normalizamos espacios y saltos de línea dentro de la misma fila para que sea lineal
+                # Normalizamos espacios dentro de la fila
                 fila_limpia = " ".join(fila.split())
                 
                 # 1. Buscamos el importe seguido de Euros
@@ -118,7 +117,7 @@ def leer_pdf_tpv_redsys(pdf):
                         todos_los_cinco_digitos = patron_ref.findall(fila_limpia)
                         
                         if todos_los_cinco_digitos:
-                            # La referencia del cliente/factura es siempre el ÚLTIMO número de 5 dígitos de la fila
+                            # La referencia de cliente/factura es el ÚLTIMO número de 5 dígitos de la fila
                             cliente_ref = todos_los_cinco_digitos[-1]
                             
                             registros.append({
@@ -183,7 +182,6 @@ if (pdf_files_antiguos or pdf_files_redsys) and excel_file and not df_pdf.empty:
     df_alb = pd.read_excel(excel_file, dtype={"Venta a-Nº cliente": str})
 
     df_alb["IMP_ALBARAN"] = df_alb["Importe envío IVA incluido"].apply(limpiar_importe_excel)
-
     df_alb["IMP_ALBARAN"] = pd.to_numeric(df_alb["IMP_ALBARAN"], errors="coerce")
     df_tpv["IMP_TPV"] = pd.to_numeric(df_tpv["IMP_TPV"], errors="coerce")
 
@@ -245,4 +243,62 @@ if (pdf_files_antiguos or pdf_files_redsys) and excel_file and not df_pdf.empty:
                 f"(total de {int(row['NUM_ALBARANES'])} albaranes) – posible error de referencia (TPV: {tpv['REF_TPV']})"
             )
 
-    for _, d
+    # Alertas de cobros duplicados en el PDF
+    for _, d in duplicados.iterrows():
+        mask = (df_res["REF_TPV"] == d["REF_TPV"]) & (df_res["IMP_TPV"] == d["IMP_TPV"])
+        df_res.loc[mask, "OBSERVACIONES"] += " | POSIBLE COBRO DUPLICADO"
+
+    df_vista = df_res.copy()
+    df_vista["IMP_ALBARAN"] = df_vista["IMP_ALBARAN"].apply(formato_coma)
+    df_vista["IMP_TPV"] = df_vista["IMP_TPV"].apply(formato_coma)
+    df_vista["TOTAL_CLIENTE"] = df_vista["TOTAL_CLIENTE"].apply(formato_coma)
+    df_vista["DIF_TOTAL"] = df_vista["DIF_TOTAL"].apply(formato_coma)
+
+    st.subheader("Resultado conciliación")
+    st.dataframe(df_vista, use_container_width=True)
+
+    refs_excel = set(df_alb["Venta a-Nº cliente"].astype(str))
+    totales_excel = set(tot_cliente["TOTAL_CLIENTE"].round(2))
+
+    df_sin = df_tpv.copy()
+    df_sin = df_sin[
+        (~df_sin["REF_TPV"].isin(refs_excel)) &
+        (~df_sin["IMP_TPV"].round(2).isin(totales_excel))
+    ]
+
+    df_sin["IMP_TPV"] = df_sin["IMP_TPV"].apply(formato_coma)
+
+    # ==========================================================
+    # DESCARGA DEL EXCEL RESULTANTE
+    # ==========================================================
+    buffer = BytesIO()
+
+    st.markdown("### Nombre del archivo de descarga")
+    nombre_excel = st.text_input("Escribe el nombre del Excel (sin .xlsx)", "conciliacion_tpv")
+
+    fecha_hora = datetime.now().strftime("%d-%m-%Y_%H-%M")
+    nombre_final = f"{nombre_excel}_{fecha_hora}"
+
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df_vista.to_excel(writer, index=False, sheet_name="Conciliación albaranes")
+        df_sin.to_excel(writer, index=False, sheet_name="Cobros sin albarán")
+
+        for sheet, df in {"Conciliación albaranes": df_vista, "Cobros sin albarán": df_sin}.items():
+            ws = writer.sheets[sheet]
+            for i, col in enumerate(df.columns, 1):
+                valores = df[col].fillna("").astype(str)
+                max_len = max(valores.apply(len).max(), len(col)) + 2
+                col_letter = chr(64 + i) if i <= 26 else f"A{chr(64 + i - 26)}"
+                ws.column_dimensions[col_letter].width = max_len
+
+    buffer.seek(0)
+
+    st.download_button(
+        f"Descargar conciliación en Excel ({nombre_final}.xlsx)",
+        data=buffer,
+        file_name=f"{nombre_final}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+else:
+    st.info("Sube al menos un formato de PDF de cobros junto al Excel de albaranes para iniciar la comprobación.")
