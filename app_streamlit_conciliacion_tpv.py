@@ -2,8 +2,7 @@ import streamlit as st
 import pandas as pd
 import pdfplumber
 import re
-import csv
-from io import StringIO, BytesIO
+from io import BytesIO
 from datetime import datetime
 
 st.set_page_config(page_title="Comprobación COBROS TPV", layout="wide")
@@ -21,7 +20,7 @@ pdf_files_antiguos = st.sidebar.file_uploader(
     accept_multiple_files=True
 )
 
-# Nuevo formato Redsys (Lector por celdas CSV)
+# Nuevo formato Redsys / Listado de Operaciones
 pdf_files_redsys = st.sidebar.file_uploader(
     "2. PDFs Formato Redsys / Factura Cliente (Varios a la vez)", 
     type=["pdf"], 
@@ -79,7 +78,7 @@ def leer_pdf_tpv(pdf):
     return pd.DataFrame(registros)
 
 # ==========================================================
-# LECTOR PDF 2: NUEVO FORMATO REDSYS (PROCESADOR DE CELDAS CSV)
+# LECTOR PDF 2: NUEVO FORMATO REDSYS (PROCESAMIENTO DIRECTO)
 # ==========================================================
 def leer_pdf_tpv_redsys(pdf):
     registros = []
@@ -93,46 +92,41 @@ def leer_pdf_tpv_redsys(pdf):
             if not texto:
                 continue
 
-            # Usamos StringIO y el lector de CSV nativo para descomponer las filas correctamente
-            fichero_texto = StringIO(texto)
-            lector_csv = csv.reader(fichero_texto, delimiter=',', quotechar='"')
-
-            for fila in lector_csv:
-                # Saltamos filas vacías o de encabezados
-                if not fila or len(fila) < 2:
-                    continue
+            # Separamos el texto completo por líneas limpias
+            lineas = [l.strip() for l in texto.split("\n") if l.strip()]
+            
+            i = 0
+            while i < len(lineas):
+                linea_actual = lineas[i]
                 
-                importe = None
-                autorizada = False
-                cliente_ref = None
-
-                # Analizamos celda por celda dentro de la misma fila
-                for celda in fila:
-                    celda_limpia = " ".join(celda.split())
-                    celda_upper = celda_limpia.upper()
-
-                    # 1. Buscar el importe en la celda
-                    m_imp = patron_importe.search(celda_limpia)
-                    if m_imp:
-                        importe_str = m_imp.group(1)
-                        importe = float(importe_str.replace(".", "").replace(",", "."))
-
-                    # 2. Validar si la operación está autorizada
-                    if "AUTORIZADA" in celda_upper and "DENEGADA" not in celda_upper:
-                        autorizada = True
-
-                    # 3. Buscar la referencia del cliente (número exacto de 5 dígitos)
-                    m_ref = patron_ref.findall(celda_limpia)
-                    if m_ref:
-                        # Nos quedamos con el último número de 5 dígitos de la celda
-                        cliente_ref = m_ref[-1]
-
-                # Si en esta fila encontramos un importe, está autorizada y tiene cliente, lo guardamos
-                if importe is not None and autorizada and cliente_ref:
-                    registros.append({
-                        "REF_TPV": str(cliente_ref),
-                        "IMP_TPV": float(importe)
-                    })
+                # Detectamos si la línea actual contiene un importe válido en Euros
+                m_imp = patron_importe.search(linea_actual)
+                if m_imp:
+                    importe_str = m_imp.group(1)
+                    importe = float(importe_str.replace(".", "").replace(",", "."))
+                    
+                    autorizada = False
+                    cliente_ref = None
+                    
+                    # Buscamos en una ventana de las siguientes 15 líneas el estado y el cliente
+                    for j in range(max(0, i - 2), min(i + 15, len(lineas))):
+                        linea_cercana = lineas[j].upper()
+                        
+                        if "AUTORIZADA" in linea_cercana and "DENEGADA" not in linea_cercana:
+                            autorizada = True
+                            
+                        m_ref = patron_ref.findall(lineas[j])
+                        if m_ref:
+                            # Nos quedamos con el número de 5 dígitos encontrado en este bloque de la transacción
+                            cliente_ref = m_ref[-1]
+                    
+                    # Si cumple las condiciones guardamos el registro
+                    if autorizada and cliente_ref:
+                        registros.append({
+                            "REF_TPV": str(cliente_ref),
+                            "IMP_TPV": float(importe)
+                        })
+                i += 1
 
     return pd.DataFrame(registros)
 
@@ -297,4 +291,17 @@ if (pdf_files_antiguos or pdf_files_redsys) and excel_file and not df_pdf.empty:
             for i, col in enumerate(df.columns, 1):
                 valores = df[col].fillna("").astype(str)
                 max_len = max(valores.apply(len).max(), len(col)) + 2
-                col_letter = chr(64 + i) if i <= 26 else
+                col_letter = chr(64 + i) if i <= 26 else f"A{chr(64 + i - 26)}"
+                ws.column_dimensions[col_letter].width = max_len
+
+    buffer.seek(0)
+
+    st.download_button(
+        f"Descargar conciliación en Excel ({nombre_final}.xlsx)",
+        data=buffer,
+        file_name=f"{nombre_final}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+else:
+    st.info("Sube al menos un formato de PDF de cobros junto al Excel de albaranes para iniciar la comprobación.")
