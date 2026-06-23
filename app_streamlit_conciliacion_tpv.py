@@ -78,11 +78,12 @@ def leer_pdf_tpv(pdf):
     return pd.DataFrame(registros)
 
 # ==========================================================
-# LECTOR PDF 2: NUEVO FORMATO REDSYS (PROCESAMIENTO DIRECTO)
+# LECTOR PDF 2: NUEVO FORMATO REDSYS (BLOQUES ENTRECOMILLADOS)
 # ==========================================================
 def leer_pdf_tpv_redsys(pdf):
     registros = []
     
+    # Patrones de búsqueda dentro de cada bloque separado
     patron_importe = re.compile(r"(\d{1,3}(?:\.\d{3})*,\d{2})\s*Euros", re.IGNORECASE)
     patron_ref = re.compile(r"\b\d{5}\b")
 
@@ -92,41 +93,33 @@ def leer_pdf_tpv_redsys(pdf):
             if not texto:
                 continue
 
-            # Separamos el texto completo por líneas limpias
-            lineas = [l.strip() for l in texto.split("\n") if l.strip()]
+            # Rompemos el texto usando las comillas dobles (cada bloque es una transacción de la tabla)
+            bloques = texto.split('"')
             
-            i = 0
-            while i < len(lineas):
-                linea_actual = lineas[i]
+            for bloque in bloques:
+                # Limpiamos saltos de línea internos para convertir el bloque en una sola línea continua de texto
+                bloque_limpio = " ".join(bloque.split())
                 
-                # Detectamos si la línea actual contiene un importe válido en Euros
-                m_imp = patron_importe.search(linea_actual)
+                # 1. Buscamos si en este bloque exacto existe un importe seguido de la palabra Euros
+                m_imp = patron_importe.search(bloque_limpio)
                 if m_imp:
                     importe_str = m_imp.group(1)
                     importe = float(importe_str.replace(".", "").replace(",", "."))
                     
-                    autorizada = False
-                    cliente_ref = None
-                    
-                    # Buscamos en una ventana de las siguientes 15 líneas el estado y el cliente
-                    for j in range(max(0, i - 2), min(i + 15, len(lineas))):
-                        linea_cercana = lineas[j].upper()
+                    # 2. Comprobamos si la transacción está AUTORIZADA (ej: 'D. Autorizada' o 'Autorizada') y no DENEGADA
+                    bloque_upper = bloque_limpio.upper()
+                    if "AUTORIZADA" in bloque_upper and "DENEGADA" not in bloque_upper:
                         
-                        if "AUTORIZADA" in linea_cercana and "DENEGADA" not in linea_cercana:
-                            autorizada = True
+                        # 3. Extraemos todos los números de 5 dígitos de este bloque específico
+                        referencias = patron_ref.findall(bloque_limpio)
+                        if referencias:
+                            # La columna Núm. Factura es siempre el ÚLTIMO número de 5 dígitos del bloque
+                            cliente_ref = referencias[-1]
                             
-                        m_ref = patron_ref.findall(lineas[j])
-                        if m_ref:
-                            # Nos quedamos con el número de 5 dígitos encontrado en este bloque de la transacción
-                            cliente_ref = m_ref[-1]
-                    
-                    # Si cumple las condiciones guardamos el registro
-                    if autorizada and cliente_ref:
-                        registros.append({
-                            "REF_TPV": str(cliente_ref),
-                            "IMP_TPV": float(importe)
-                        })
-                i += 1
+                            registros.append({
+                                "REF_TPV": str(cliente_ref),
+                                "IMP_TPV": float(importe)
+                            })
 
     return pd.DataFrame(registros)
 
