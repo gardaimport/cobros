@@ -2,7 +2,8 @@ import streamlit as st
 import pandas as pd
 import pdfplumber
 import re
-from io import BytesIO
+import csv
+from io import StringIO, BytesIO
 from datetime import datetime
 
 st.set_page_config(page_title="Comprobación COBROS TPV", layout="wide")
@@ -20,7 +21,7 @@ pdf_files_antiguos = st.sidebar.file_uploader(
     accept_multiple_files=True
 )
 
-# Nuevo formato Redsys (Busca el número de cliente en la misma línea del importe)
+# Nuevo formato Redsys (Lector por celdas CSV)
 pdf_files_redsys = st.sidebar.file_uploader(
     "2. PDFs Formato Redsys / Factura Cliente (Varios a la vez)", 
     type=["pdf"], 
@@ -78,12 +79,11 @@ def leer_pdf_tpv(pdf):
     return pd.DataFrame(registros)
 
 # ==========================================================
-# LECTOR PDF 2: NUEVO FORMATO REDSYS (CORREGIDO POR PROXIMIDAD)
+# LECTOR PDF 2: NUEVO FORMATO REDSYS (PROCESADOR DE CELDAS CSV)
 # ==========================================================
 def leer_pdf_tpv_redsys(pdf):
     registros = []
     
-    # Patrón para capturar importes como: 391,13 o 1.111,80 seguido de Euros
     patron_importe = re.compile(r"(\d{1,3}(?:\.\d{3})*,\d{2})\s*Euros", re.IGNORECASE)
     patron_ref = re.compile(r"\b\d{5}\b")
 
@@ -93,33 +93,46 @@ def leer_pdf_tpv_redsys(pdf):
             if not texto:
                 continue
 
-            # Buscamos todos los importes que hay en la página
-            for m_imp in patron_importe.finditer(texto):
-                importe_str = m_imp.group(1)
-                pos_inicio_importe = m_imp.start()
+            # Usamos StringIO y el lector de CSV nativo para descomponer las filas correctamente
+            fichero_texto = StringIO(texto)
+            lector_csv = csv.reader(fichero_texto, delimiter=',', quotechar='"')
+
+            for fila in lector_csv:
+                # Saltamos filas vacías o de encabezados
+                if not fila or len(fila) < 2:
+                    continue
                 
-                # Convertimos "391,13" a float 391.13
-                importe = float(importe_str.replace(".", "").replace(",", "."))
-                
-                # Creamos una ventana de texto hacia adelante (400 caracteres) para buscar el estado y el cliente
-                ventana_texto = texto[pos_inicio_importe : pos_inicio_importe + 400]
-                ventana_upper = ventana_texto.upper()
-                
-                # 1. Comprobamos que esté AUTORIZADA y no DENEGADA
-                if "AUTORIZADA" in ventana_upper and "DENEGADA" not in ventana_upper:
-                    
-                    # 2. Buscamos las referencias de 5 dígitos en esta ventana
-                    referencias = patron_ref.findall(ventana_texto)
-                    
-                    if referencias:
-                        # En el volcado de Redsys, el número de factura/cliente (ej: 27877) 
-                        # aparece al final del bloque de datos de esa transacción.
-                        cliente_ref = referencias[-1]
-                        
-                        registros.append({
-                            "REF_TPV": str(cliente_ref),
-                            "IMP_TPV": float(importe)
-                        })
+                importe = None
+                autorizada = False
+                cliente_ref = None
+
+                # Analizamos celda por celda dentro de la misma fila
+                for celda in fila:
+                    celda_limpia = " ".join(celda.split())
+                    celda_upper = celda_limpia.upper()
+
+                    # 1. Buscar el importe en la celda
+                    m_imp = patron_importe.search(celda_limpia)
+                    if m_imp:
+                        importe_str = m_imp.group(1)
+                        importe = float(importe_str.replace(".", "").replace(",", "."))
+
+                    # 2. Validar si la operación está autorizada
+                    if "AUTORIZADA" in celda_upper and "DENEGADA" not in celda_upper:
+                        autorizada = True
+
+                    # 3. Buscar la referencia del cliente (número exacto de 5 dígitos)
+                    m_ref = patron_ref.findall(celda_limpia)
+                    if m_ref:
+                        # Nos quedamos con el último número de 5 dígitos de la celda
+                        cliente_ref = m_ref[-1]
+
+                # Si en esta fila encontramos un importe, está autorizada y tiene cliente, lo guardamos
+                if importe is not None and autorizada and cliente_ref:
+                    registros.append({
+                        "REF_TPV": str(cliente_ref),
+                        "IMP_TPV": float(importe)
+                    })
 
     return pd.DataFrame(registros)
 
@@ -284,17 +297,4 @@ if (pdf_files_antiguos or pdf_files_redsys) and excel_file and not df_pdf.empty:
             for i, col in enumerate(df.columns, 1):
                 valores = df[col].fillna("").astype(str)
                 max_len = max(valores.apply(len).max(), len(col)) + 2
-                col_letter = chr(64 + i) if i <= 26 else f"A{chr(64 + i - 26)}"
-                ws.column_dimensions[col_letter].width = max_len
-
-    buffer.seek(0)
-
-    st.download_button(
-        f"Descargar conciliación en Excel ({nombre_final}.xlsx)",
-        data=buffer,
-        file_name=f"{nombre_final}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
-else:
-    st.info("Sube al menos un formato de PDF de cobros junto al Excel de albaranes para iniciar la comprobación.")
+                col_letter = chr(64 + i) if i <= 26 else
