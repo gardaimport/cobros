@@ -78,48 +78,47 @@ def leer_pdf_tpv(pdf):
     return pd.DataFrame(registros)
 
 # ==========================================================
-# LECTOR PDF 2: NUEVO FORMATO REDSYS (BLOQUES ENTRECOMILLADOS)
+# LECTOR PDF 2: NUEVO FORMATO REDSYS (EXTRACTOR DE TABLAS VISUALES)
 # ==========================================================
 def leer_pdf_tpv_redsys(pdf):
     registros = []
     
-    # Patrones de búsqueda dentro de cada bloque separado
-    patron_importe = re.compile(r"(\d{1,3}(?:\.\d{3})*,\d{2})\s*Euros", re.IGNORECASE)
+    patron_importe = re.compile(r"(\d{1,3}(?:\.\d{3})*,\d{2})", re.IGNORECASE)
     patron_ref = re.compile(r"\b\d{5}\b")
 
     with pdfplumber.open(pdf) as pdf_doc:
         for page in pdf_doc.pages:
-            texto = page.extract_text()
-            if not texto:
+            # Forzamos la extracción estructurada como tabla visual
+            tablas = page.extract_tables()
+            if not tablas:
                 continue
-
-            # Rompemos el texto usando las comillas dobles (cada bloque es una transacción de la tabla)
-            bloques = texto.split('"')
-            
-            for bloque in bloques:
-                # Limpiamos saltos de línea internos para convertir el bloque en una sola línea continua de texto
-                bloque_limpio = " ".join(bloque.split())
                 
-                # 1. Buscamos si en este bloque exacto existe un importe seguido de la palabra Euros
-                m_imp = patron_importe.search(bloque_limpio)
-                if m_imp:
-                    importe_str = m_imp.group(1)
-                    importe = float(importe_str.replace(".", "").replace(",", "."))
+            for tabla in tablas:
+                for fila in tabla:
+                    # Unimos la fila entera en un string limpio para analizarla globalmente
+                    fila_texto = " ".join([str(celda) for celda in fila if celda])
+                    fila_limpia = " ".join(fila_texto.split())
+                    fila_upper = fila_limpia.upper()
                     
-                    # 2. Comprobamos si la transacción está AUTORIZADA (ej: 'D. Autorizada' o 'Autorizada') y no DENEGADA
-                    bloque_upper = bloque_limpio.upper()
-                    if "AUTORIZADA" in bloque_upper and "DENEGADA" not in bloque_upper:
+                    # Filtro 1: Debe ser una transacción que contenga "Euros" y estar "Autorizada"
+                    if "EUROS" in fila_upper and "AUTORIZADA" in fila_upper and "DENEGADA" not in fila_upper:
                         
-                        # 3. Extraemos todos los números de 5 dígitos de este bloque específico
-                        referencias = patron_ref.findall(bloque_limpio)
-                        if referencias:
-                            # La columna Núm. Factura es siempre el ÚLTIMO número de 5 dígitos del bloque
-                            cliente_ref = referencias[-1]
+                        # Extraemos el importe monetario
+                        m_imp = patron_importe.search(fila_limpia)
+                        if m_imp:
+                            importe_str = m_imp.group(1)
+                            importe = float(importe_str.replace(".", "").replace(",", "."))
                             
-                            registros.append({
-                                "REF_TPV": str(cliente_ref),
-                                "IMP_TPV": float(importe)
-                            })
+                            # Extraemos todos los números de 5 dígitos de la fila
+                            referencias = patron_ref.findall(fila_limpia)
+                            if referencias:
+                                # El número de factura siempre es el último número de 5 dígitos de la fila
+                                cliente_ref = referencias[-1]
+                                
+                                registros.append({
+                                    "REF_TPV": str(cliente_ref),
+                                    "IMP_TPV": float(importe)
+                                })
 
     return pd.DataFrame(registros)
 
