@@ -3,6 +3,7 @@ import pandas as pd
 import re
 from io import BytesIO
 from datetime import datetime
+import pdfplumber
 
 st.set_page_config(page_title="Comprobación COBROS TPV", layout="wide")
 st.title("Comprobación COBROS TPV")
@@ -11,23 +12,78 @@ st.title("Comprobación COBROS TPV")
 # SELECTORES DE ARCHIVOS (Barra Lateral)
 # ==========================================================
 st.sidebar.header("Carga de Documentos")
-excel_file = st.sidebar.file_uploader("1. Sube el Excel de albaranes", type=["xlsx", "xls"])
+
+# SE MANTIENE EL MÉTODO 1 ORIGINAL (Formato antiguo línea a línea)
+pdf_files_antiguos = st.sidebar.file_uploader(
+    "1. PDFs Formato Original/Antiguo (Varios a la vez)", 
+    type=["pdf"], 
+    accept_multiple_files=True
+)
+
+excel_file = st.sidebar.file_uploader("2. Sube el Excel de albaranes", type=["xlsx", "xls"])
 
 # ==========================================================
-# SECCIÓN PRINCIPAL: PEGAR DATOS DEL ASISTENTE (GEMINI)
+# NUEVO MÉTODO 2: PEGAR DATOS DESDE EL CHAT (Para formato Redsys)
 # ==========================================================
 st.markdown("### 📋 Entrada de datos de Cobros TPV")
-st.info("Pásale el PDF de Redsys a Gemini en nuestro chat. Cuando te devuelva la tabla limpia, selecciónala, cópiala y pégala en el cuadro de texto de abajo.")
+st.info("💡 **¿Tienes un PDF con el formato nuevo de Redsys?** Pásamelo por nuestro chat. Cuando te devuelva la tabla limpia, selecciónala, cópiala y pégala en el cuadro de texto de abajo. Si estás usando el **formato antiguo**, simplemente súbelo a la barra lateral.")
 
-# Cuadro de texto grande para pegar la tabla de texto o markdown
 datos_pegados = st.text_area(
-    "Pega aquí la tabla de cobros generada por la IA:",
-    height=250,
+    "Pega aquí la tabla de cobros de Redsys generada por la IA (opcional):",
+    height=180,
     placeholder="Cliente\tImporte Cobrado\n27877\t391,13\n17368\t111,80..."
 )
 
 # ==========================================================
-# PROCESADOR DE TEXTO PEGADO
+# LECTOR PDF 1: FORMATO ORIGINAL/ANTIGUO (MÉTODO INICIAL)
+# ==========================================================
+def leer_pdf_tpv_antiguo(pdf):
+    registros = []
+    patron_importe = re.compile(r"\b\d+\.\d{2}\b")
+    patron_ref = re.compile(r"\b\d{5}\b")
+    patron_resultado = re.compile(r"\b(AUTORIZADA|DENEGADA)\b")
+
+    with pdfplumber.open(pdf) as pdf_doc:
+        for page in pdf_doc.pages:
+            texto = page.extract_text()
+            if not texto:
+                continue
+
+            lineas = [l.strip() for l in texto.split("\n") if l.strip()]
+            i = 0
+
+            while i < len(lineas):
+                linea = lineas[i]
+
+                m_imp = patron_importe.search(linea)
+                if m_imp:
+                    importe = float(m_imp.group())
+                    ref = None
+                    resultado = None
+
+                    for j in range(i, min(i + 10, len(lineas))):
+                        if not ref:
+                            m_ref = patron_ref.search(lineas[j])
+                            if m_ref:
+                                ref = m_ref.group()
+
+                        if not resultado:
+                            m_res = patron_resultado.search(lineas[j])
+                            if m_res:
+                                resultado = m_res.group()
+
+                    if ref and resultado == "AUTORIZADA":
+                        registros.append({
+                            "REF_TPV": str(ref),
+                            "IMP_TPV": float(importe)
+                        })
+
+                i += 1
+
+    return pd.DataFrame(registros)
+
+# ==========================================================
+# PROCESADOR DE TEXTO COPIADO Y PEGADO
 # ==========================================================
 def procesar_tabla_pegada(texto):
     registros = []
@@ -37,14 +93,11 @@ def procesar_tabla_pegada(texto):
     lineas = texto.strip().split("\n")
     
     for linea in lineas:
-        # Limpiamos caracteres típicos de las tablas de Markdown (como |, con espacios, etc.)
         linea_limpia = linea.replace("|", " ").strip()
         
-        # Saltamos líneas que sean cabeceras o separadores de tabla (---)
         if "CLIENTE" in linea_limpia.upper() or "IMPORTE" in linea_limpia.upper() or "---" in linea_limpia:
             continue
             
-        # Buscamos cualquier número de 5 dígitos (Cliente) y cantidades con coma o punto decimal
         valores = linea_limpia.split()
         if not valores:
             continue
@@ -52,23 +105,20 @@ def procesar_tabla_pegada(texto):
         cliente = None
         importe = None
         
-        # Buscamos el cliente (5 dígitos)
+        # Detectar el cliente (5 dígitos)
         for v in valores:
-            v_limpio = re.sub(r"[^\d]", "", v) # Nos quedamos solo con los números por si tiene asteriscos **
+            v_limpio = re.sub(r"[^\d]", "", v)
             if len(v_limpio) == 5:
                 cliente = v_limpio
                 break
                 
-        # Buscamos el importe (número que tenga decimales, o que contenga comas/puntos)
+        # Detectar el importe numérico con decimales
         for v in valores:
-            # Quitamos el símbolo de € si lo lleva para no interferir
             v_num = v.replace("€", "").replace(" ", "").strip()
-            # Validamos si parece un número contable (con coma o punto)
             if re.search(r"\d+[\.,]\d+", v_num) or (v_num.isdigit() and int(v_num) > 0):
                 try:
-                    # Convertimos formato europeo (391,13) a float de Python (391.13)
                     if "," in v_num and "." in v_num:
-                        v_num = v_num.replace(".", "") # Quitar puntos de millar
+                        v_num = v_num.replace(".", "")
                     v_num = v_num.replace(",", ".")
                     importe = float(v_num)
                 except ValueError:
@@ -98,24 +148,41 @@ def formato_coma(x):
         return ""
 
 # ==========================================================
-# PROCESAMIENTO Y UNIFICACIÓN DE DATOS
+# UNIFICACIÓN DE FUENTES DE DATOS (PDFs Antiguos + Texto Pegado)
 # ==========================================================
-df_pdf = pd.DataFrame()
+lista_dfs = []
 
-if datos_pegados:
-    df_pdf = procesar_tabla_pegada(datos_pegados)
-    
-    if not df_pdf.empty:
-        df_pdf = df_pdf.drop_duplicates(subset=["REF_TPV", "IMP_TPV"], keep="first")
-        st.subheader("👀 Vista previa de cobros reconocidos")
-        df_prev = df_pdf.copy()
-        df_prev["IMP_TPV"] = df_prev["IMP_TPV"].apply(formato_coma)
-        st.dataframe(df_prev, use_container_width=True)
-    else:
-        st.error("⚠️ No se ha podido reconocer ningún formato de cliente/importe válido en el texto pegado. Revisa que incluya los 5 dígitos del cliente y el importe.")
+# 1. Añadimos datos si se han subido PDFs antiguos
+if pdf_files_antiguos:
+    for pdf in pdf_files_antiguos:
+        df_individual = leer_pdf_tpv_antiguo(pdf)
+        if not df_individual.empty:
+            lista_dfs.append(df_individual)
+
+# 2. Añadimos datos si se ha pegado texto en el cuadro
+if datos_pegados.strip():
+    df_pegado = procesar_tabla_pegada(datos_pegados)
+    if not df_pegado.empty:
+        lista_dfs.append(df_pegado)
+
+# Consolidamos toda la entrada de TPV detectada
+if lista_dfs:
+    df_pdf = pd.concat(lista_dfs, ignore_index=True)
+    df_pdf = df_pdf.drop_duplicates(subset=["REF_TPV", "IMP_TPV"], keep="first")
+else:
+    df_pdf = pd.DataFrame()
+
+# Mostrar la vista previa unificada
+if not df_pdf.empty:
+    st.subheader("👀 Vista previa de todos los cobros TPV reconocidos")
+    df_prev = df_pdf.copy()
+    df_prev["IMP_TPV"] = df_prev["IMP_TPV"].apply(formato_coma)
+    st.dataframe(df_prev, use_container_width=True)
+elif pdf_files_antiguos or datos_pegados.strip():
+    st.error("⚠️ No se han detectado cobros válidos. Verifica los PDFs o el formato del texto pegado.")
 
 # ==========================================================
-# PROCESO DE CONCILIACIÓN CON EXCEL
+# PROCESO DE CONCILIACIÓN CON EL EXCEL DE ALBARANES
 # ==========================================================
 if excel_file and not df_pdf.empty:
 
@@ -126,7 +193,6 @@ if excel_file and not df_pdf.empty:
     df_alb["IMP_ALBARAN"] = pd.to_numeric(df_alb["IMP_ALBARAN"], errors="coerce")
     df_tpv["IMP_TPV"] = pd.to_numeric(df_tpv["IMP_TPV"], errors="coerce")
 
-    # Agrupamos albaranes por cliente
     tot_cliente = df_alb.groupby("Venta a-Nº cliente")["IMP_ALBARAN"].agg(["sum", "count"]).reset_index()
     tot_cliente.columns = ["CLIENTE", "TOTAL_CLIENTE", "NUM_ALBARANES"]
 
@@ -135,7 +201,6 @@ if excel_file and not df_pdf.empty:
     duplicados = df_tpv.groupby(["REF_TPV", "IMP_TPV"]).size().reset_index(name="VECES")
     duplicados = duplicados[duplicados["VECES"] > 1]
 
-    # Cruce de datos
     df_res = df_alb.merge(
         tpv_ref,
         how="left",
@@ -160,7 +225,6 @@ if excel_file and not df_pdf.empty:
         df_res.loc[mask_ref, "TOTAL_CLIENTE"].astype(float)
     )
 
-    # Análisis de diferencias de importes
     for idx, row in df_res[mask_ref].iterrows():
         dif = row["DIF_TOTAL"]
 
@@ -172,7 +236,6 @@ if excel_file and not df_pdf.empty:
         else:
             df_res.at[idx, "OBSERVACIONES"] = f"Cobrado de menos {formato_coma(row['IMP_TPV'])} – posible abono pendiente"
 
-    # Buscar posibles errores de referencia (Coincidencia por importe exacto)
     for idx, row in df_res[df_res["ESTADO COBRO"] == "NO COBRADO"].iterrows():
         total = row["TOTAL_CLIENTE"]
         candidato = df_tpv[abs(df_tpv["IMP_TPV"] - total) < 0.01]
@@ -188,7 +251,6 @@ if excel_file and not df_pdf.empty:
                 f"(total de {int(row['NUM_ALBARANES'])} albaranes) – posible error de referencia (TPV: {tpv['REF_TPV']})"
             )
 
-    # Alertas de cobros duplicados en lo pegado
     for _, d in duplicados.iterrows():
         mask = (df_res["REF_TPV"] == d["REF_TPV"]) & (df_res["IMP_TPV"] == d["IMP_TPV"])
         df_res.loc[mask, "OBSERVACIONES"] += " | POSIBLE COBRO DUPLICADO"
@@ -202,7 +264,6 @@ if excel_file and not df_pdf.empty:
     st.subheader("📊 Resultado de la conciliación")
     st.dataframe(df_vista, use_container_width=True)
 
-    # Identificar cobros en TPV que no se asocian a ningún cliente del Excel
     refs_excel = set(df_alb["Venta a-Nº cliente"].astype(str))
     totales_excel = set(tot_cliente["TOTAL_CLIENTE"].round(2))
 
