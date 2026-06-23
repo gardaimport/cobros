@@ -20,7 +20,7 @@ pdf_files_antiguos = st.sidebar.file_uploader(
     accept_multiple_files=True
 )
 
-# Nuevo formato Redsys / Listado de Operaciones
+# Nuevo formato Redsys (Procesador por bloques de texto reales)
 pdf_files_redsys = st.sidebar.file_uploader(
     "2. PDFs Formato Redsys / Factura Cliente (Varios a la vez)", 
     type=["pdf"], 
@@ -78,47 +78,50 @@ def leer_pdf_tpv(pdf):
     return pd.DataFrame(registros)
 
 # ==========================================================
-# LECTOR PDF 2: NUEVO FORMATO REDSYS (EXTRACTOR DE TABLAS VISUALES)
+# LECTOR PDF 2: NUEVO FORMATO REDSYS (PROCESADOR TEXTO PLANO)
 # ==========================================================
 def leer_pdf_tpv_redsys(pdf):
     registros = []
     
-    patron_importe = re.compile(r"(\d{1,3}(?:\.\d{3})*,\d{2})", re.IGNORECASE)
+    # Patrón para importes en formato español (ej: 391,13 o 1.111,80) seguido o precedido de Euros
+    patron_importe = re.compile(r"(\d{1,3}(?:\.\d{3})*,\d{2})\s*Euros|Euros\s*(\d{1,3}(?:\.\d{3})*,\d{2})", re.IGNORECASE)
     patron_ref = re.compile(r"\b\d{5}\b")
 
     with pdfplumber.open(pdf) as pdf_doc:
         for page in pdf_doc.pages:
-            # Forzamos la extracción estructurada como tabla visual
-            tablas = page.extract_tables()
-            if not tablas:
+            texto = page.extract_text()
+            if not texto:
                 continue
+
+            # Normalizamos por completo el texto quitando saltos de línea molestos
+            texto_unificado = " ".join(texto.split())
+            
+            # Buscamos todas las apariciones de importes asociados a la palabra "Euros"
+            for m_imp in re.finditer(r"(\d{1,3}(?:\.\d{3})*,\d{2})\s*Euros", texto_unificado, re.IGNORECASE):
+                importe_str = m_imp.group(1)
+                importe = float(importe_str.replace(".", "").replace(",", "."))
                 
-            for tabla in tablas:
-                for fila in tabla:
-                    # Unimos la fila entera en un string limpio para analizarla globalmente
-                    fila_texto = " ".join([str(celda) for celda in fila if celda])
-                    fila_limpia = " ".join(fila_texto.split())
-                    fila_upper = fila_limpia.upper()
+                pos_inicio = m_imp.start()
+                
+                # Creamos una ventana de inspección de 600 caracteres hacia adelante de ese importe
+                ventana = texto_unificado[pos_inicio : pos_inicio + 600]
+                ventana_upper = ventana.upper()
+                
+                # 1. Comprobamos que esté autorizada y no denegada
+                if "AUTORIZADA" in ventana_upper and "DENEGADA" not in ventana_upper:
                     
-                    # Filtro 1: Debe ser una transacción que contenga "Euros" y estar "Autorizada"
-                    if "EUROS" in fila_upper and "AUTORIZADA" in fila_upper and "DENEGADA" not in fila_upper:
+                    # 2. Extraemos todos los números de 5 dígitos en esta sección
+                    todos_los_cinco_digitos = patron_ref.findall(ventana)
+                    
+                    if todos_los_cinco_digitos:
+                        # Descartamos el código de comercio si coincide con 5 dígitos (en tu PDF es 6874, que son 4)
+                        # El número de factura del cliente siempre va al final de los datos de la transacción
+                        cliente_ref = todos_los_cinco_digitos[-1]
                         
-                        # Extraemos el importe monetario
-                        m_imp = patron_importe.search(fila_limpia)
-                        if m_imp:
-                            importe_str = m_imp.group(1)
-                            importe = float(importe_str.replace(".", "").replace(",", "."))
-                            
-                            # Extraemos todos los números de 5 dígitos de la fila
-                            referencias = patron_ref.findall(fila_limpia)
-                            if referencias:
-                                # El número de factura siempre es el último número de 5 dígitos de la fila
-                                cliente_ref = referencias[-1]
-                                
-                                registros.append({
-                                    "REF_TPV": str(cliente_ref),
-                                    "IMP_TPV": float(importe)
-                                })
+                        registros.append({
+                            "REF_TPV": str(cliente_ref),
+                            "IMP_TPV": float(importe)
+                        })
 
     return pd.DataFrame(registros)
 
@@ -283,7 +286,13 @@ if (pdf_files_antiguos or pdf_files_redsys) and excel_file and not df_pdf.empty:
             for i, col in enumerate(df.columns, 1):
                 valores = df[col].fillna("").astype(str)
                 max_len = max(valores.apply(len).max(), len(col)) + 2
-                col_letter = chr(64 + i) if i <= 26 else f"A{chr(64 + i - 26)}"
+                
+                # Cálculo de letra dinámico libre de fallos de sintaxis
+                if i <= 26:
+                    col_letter = chr(64 + i)
+                else:
+                    col_letter = chr(64 + (i // 26)) + chr(64 + (i % 26))
+                    
                 ws.column_dimensions[col_letter].width = max_len
 
     buffer.seek(0)
