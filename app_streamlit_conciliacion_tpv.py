@@ -78,12 +78,12 @@ def leer_pdf_tpv(pdf):
     return pd.DataFrame(registros)
 
 # ==========================================================
-# LECTOR PDF 2: NUEVO FORMATO REDSYS
+# LECTOR PDF 2: NUEVO FORMATO REDSYS (CORREGIDO POR PROXIMIDAD)
 # ==========================================================
 def leer_pdf_tpv_redsys(pdf):
     registros = []
     
-    # Expresiones regulares independientes para mayor precisión
+    # Patrón para capturar importes como: 391,13 o 1.111,80 seguido de Euros
     patron_importe = re.compile(r"(\d{1,3}(?:\.\d{3})*,\d{2})\s*Euros", re.IGNORECASE)
     patron_ref = re.compile(r"\b\d{5}\b")
 
@@ -93,37 +93,33 @@ def leer_pdf_tpv_redsys(pdf):
             if not texto:
                 continue
 
-            # Separamos por bloques de comillas dobles (que es como Redsys agrupa las filas de la tabla)
-            if '"' in texto:
-                filas = [f.strip() for f in texto.split('"') if f.strip()]
-            else:
-                filas = [f.strip() for f in texto.split('\n') if f.strip()]
-
-            for fila in filas:
-                # Normalizamos espacios dentro de la fila
-                fila_limpia = " ".join(fila.split())
+            # Buscamos todos los importes que hay en la página
+            for m_imp in patron_importe.finditer(texto):
+                importe_str = m_imp.group(1)
+                pos_inicio_importe = m_imp.start()
                 
-                # 1. Buscamos el importe seguido de Euros
-                m_imp = patron_importe.search(fila_limpia)
-                if m_imp:
-                    importe_str = m_imp.group(1)
-                    importe = float(importe_str.replace(".", "").replace(",", "."))
+                # Convertimos "391,13" a float 391.13
+                importe = float(importe_str.replace(".", "").replace(",", "."))
+                
+                # Creamos una ventana de texto hacia adelante (400 caracteres) para buscar el estado y el cliente
+                ventana_texto = texto[pos_inicio_importe : pos_inicio_importe + 400]
+                ventana_upper = ventana_texto.upper()
+                
+                # 1. Comprobamos que esté AUTORIZADA y no DENEGADA
+                if "AUTORIZADA" in ventana_upper and "DENEGADA" not in ventana_upper:
                     
-                    # 2. Verificamos que esté AUTORIZADA y no DENEGADA
-                    fila_upper = fila_limpia.upper()
-                    if "AUTORIZADA" in fila_upper and "DENEGADA" not in fila_upper:
+                    # 2. Buscamos las referencias de 5 dígitos en esta ventana
+                    referencias = patron_ref.findall(ventana_texto)
+                    
+                    if referencias:
+                        # En el volcado de Redsys, el número de factura/cliente (ej: 27877) 
+                        # aparece al final del bloque de datos de esa transacción.
+                        cliente_ref = referencias[-1]
                         
-                        # 3. Extraemos TODOS los números de 5 dígitos de la fila
-                        todos_los_cinco_digitos = patron_ref.findall(fila_limpia)
-                        
-                        if todos_los_cinco_digitos:
-                            # La referencia de cliente/factura es el ÚLTIMO número de 5 dígitos de la fila
-                            cliente_ref = todos_los_cinco_digitos[-1]
-                            
-                            registros.append({
-                                "REF_TPV": str(cliente_ref),
-                                "IMP_TPV": float(importe)
-                            })
+                        registros.append({
+                            "REF_TPV": str(cliente_ref),
+                            "IMP_TPV": float(importe)
+                        })
 
     return pd.DataFrame(registros)
 
