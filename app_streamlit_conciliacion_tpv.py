@@ -83,7 +83,7 @@ def leer_pdf_tpv_antiguo(pdf):
     return pd.DataFrame(registros)
 
 # ==========================================================
-# PROCESADOR DE TEXTO COPIADO Y PEGADO
+# PROCESADOR DE TEXTO COPIADO Y PEGADO (MODIFICADO)
 # ==========================================================
 def procesar_tabla_pegada(texto):
     registros = []
@@ -105,12 +105,20 @@ def procesar_tabla_pegada(texto):
         cliente = None
         importe = None
         
-        # Detectar el cliente (5 dígitos)
+        # Detectar el cliente (Cualquier número largo, priorizando el que no tiene formato de importe)
         for v in valores:
             v_limpio = re.sub(r"[^\d]", "", v)
-            if len(v_limpio) == 5:
+            if v_limpio and "," not in v and "." not in v:
                 cliente = v_limpio
                 break
+        
+        # Si no se detectó así, tomamos el primer bloque numérico largo que encontremos
+        if not cliente:
+            for v in valores:
+                v_limpio = re.sub(r"[^\d]", "", v)
+                if len(v_limpio) >= 5:
+                    cliente = v_limpio
+                    break
                 
         # Detectar el importe numérico con decimales
         for v in valores:
@@ -254,6 +262,11 @@ if excel_file and not df_pdf.empty:
     for _, d in duplicados.iterrows():
         mask = (df_res["REF_TPV"] == d["REF_TPV"]) & (df_res["IMP_TPV"] == d["IMP_TPV"])
         df_res.loc[mask, "OBSERVACIONES"] += " | POSIBLE COBRO DUPLICADO"
+
+    # NUEVO: Marcar las referencias del TPV que no tengan exactamente 5 dígitos
+    for idx, row in df_res[df_res["REF_TPV"].notna()].iterrows():
+        if len(str(row["REF_TPV"])) != 5:
+            df_res.at[idx, "OBSERVACIONES"] = str(df_res.at[idx, "OBSERVACIONES"]) + " | REFERENCIA TPV ERRÓNEA (No tiene 5 dígitos)"
 
     df_vista = df_res.copy()
     df_vista["IMP_ALBARAN"] = df_vista["IMP_ALBARAN"].apply(formato_coma)
